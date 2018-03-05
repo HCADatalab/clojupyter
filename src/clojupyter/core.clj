@@ -3,6 +3,7 @@
             [clojupyter.middleware.mime-values]
             [clojupyter.misc.zmq-comm :as zmq-comm]
             [clojupyter.misc.nrepl-comm :as nrepl-comm]
+            [clojupyter.misc.unrepl-comm :as unrepl-comm]
             [clojupyter.misc.states :as states]
             [clojupyter.misc.messages :refer :all]
             [clojupyter.protocol.zmq-comm :as pzmq]
@@ -137,7 +138,20 @@
         control-handler (configure-control-handler states zmq-comm nrepl-comm socket signer)]
     (event-loop states zmq-comm socket signer control-handler)))
 
-(defn run-kernel [config]
+(defn- with-nrepl-comm [f]
+  (with-open [nrepl-server    (start-nrepl-server)
+              nrepl-transport (nrepl/connect :port (:port nrepl-server))]
+        (let [nrepl-client  (nrepl/client nrepl-transport Integer/MAX_VALUE)
+              nrepl-session (nrepl/new-session nrepl-client)
+              nrepl-comm    (nrepl-comm/make-nrepl-comm nrepl-server nrepl-transport
+                              nrepl-client nrepl-session)]
+          (f nrepl-comm))))
+
+(defn- with-unrepl-comm [f]
+  (let [unrepl-comm    (unrepl-comm/make-unrepl-comm)]
+    (f unrepl-comm))) ; TODO: close
+
+(defn run-kernel [kernel-type config]
   (let [hb-addr      (address config :hb_port)
         shell-addr   (address config :shell_port)
         iopub-addr   (address config :iopub_port)
@@ -159,14 +173,11 @@
           hb-socket      (atom (doto (zmq/socket context :rep)
                                  (zmq/bind hb-addr)))
           zmq-comm       (zmq-comm/make-zmq-comm shell-socket iopub-socket stdin-socket
-                                                 control-socket hb-socket)]
-      (with-open [nrepl-server    (start-nrepl-server)
-                  nrepl-transport (nrepl/connect :port (:port nrepl-server))]
-        (let [nrepl-client  (nrepl/client nrepl-transport Integer/MAX_VALUE)
-              nrepl-session (nrepl/new-session nrepl-client)
-              nrepl-comm    (nrepl-comm/make-nrepl-comm nrepl-server nrepl-transport
-                                                        nrepl-client nrepl-session)
-              status-sleep  1000]
+                                                 control-socket hb-socket)
+          status-sleep 1000
+          with-comm (case kernel-type "nrepl" with-nrepl-comm "unrepl" with-unrepl-comm)]
+      (with-comm 
+        (fn [nrepl-comm]
           (try
             (future (shell-loop     states zmq-comm nrepl-comm signer checker))
             (future (control-loop   states zmq-comm nrepl-comm signer checker))
@@ -181,6 +192,6 @@
                        (zmq/close @socket))
                      (System/exit 0))))))))
 
-(defn -main [& args]
+(defn -main [type & args]
   (log/set-level! :error)
-  (run-kernel (prep-config args)))
+  (run-kernel type (prep-config args)))

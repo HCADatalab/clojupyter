@@ -221,9 +221,9 @@
         content {:restart restart :status "ok"}
         session-id (get-in message [:header :session])
         ident (:idents message)
-        server @(:nrepl-server nrepl-comm)]
+        #_#_server @(:nrepl-server nrepl-comm)]
     (reset! (:alive states) false)
-    (nrepl.server/stop-server server)
+    #_(nrepl.server/stop-server server)
     (send-router-message zmq-comm socket
                          "shutdown_reply"
                          content parent-header session-id metadata signer ident)
