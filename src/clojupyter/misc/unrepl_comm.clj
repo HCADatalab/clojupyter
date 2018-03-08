@@ -94,7 +94,7 @@
            clean))))
 
 (defn make-unrepl-comm []
-  (let [sessions (atom {})]
+  (let [unrepl-ch (atom nil)]
     (reify
       pnrepl/PNreplComm
       (nrepl-trace [self]
@@ -132,7 +132,7 @@
                                          parent-header {} session-id signer))
               do-eval
               (fn [code]
-                (if-some [eval-ch (@sessions session-id)]
+                (if-some [eval-ch @unrepl-ch]
                   (let [p (promise)]
                     (a/>!! eval-ch [code p])
                     (let [r @p]
@@ -166,8 +166,7 @@
                                               (let [socket (java.net.Socket. ^String host (Integer/parseInt port))]
                                                 {:in (-> socket .getOutputStream io/writer)
                                                  :out (-> socket .getInputStream io/reader)}))]
-                                (swap! sessions assoc session-id
-                                  (unrepl-client streams))
+                                (reset! unrepl-ch (unrepl-client streams))
                                 (stdout "Successfully connected!"))
                              (catch Exception e
                                (stderr "Failed connection.")))
