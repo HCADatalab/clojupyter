@@ -51,31 +51,28 @@
           ; framed input because notebook style
           (doto in (.write (prn-str `(eval (read-string ~s)))) .flush)
           (recur))))
-    (a/go-loop [offset 0 evals clojure.lang.PersistentQueue/EMPTY]
-      (let [[val port] (a/alts! [to-eval unrepl-output])]
-        (condp = port
-          to-eval (let [[code promise] val
+    (a/go-loop [offset 0 all-caught-up true eval-id nil msgs-out nil]
+      (some-> msgs-out (cond-> all-caught-up a/close!))
+      (let [[val ch] (a/alts! (cond-> [unrepl-output] all-caught-up (conj to-eval)))]
+        (condp = ch
+          to-eval (let [[code msgs] val
                         code (str code \newline)
                         offset (+ offset (count code))]
                     (a/>! unrepl-input code)
-                    (recur offset (conj evals [offset promise])))
+                    (recur offset false eval-id msgs))
           unrepl-output (let [[tag payload id] val]
                           (case tag
-                             ; misaligned forms are not tracked because all input is framed
+                            ; misaligned forms are not tracked because all input is framed
                             #_#_:read
-                            (recur offset (transduce (take-while (fn [[end-offset]] (< end-offset (:offset payload)))) 
-                                            (completing (fn [evals _] (pop evals))) evals evals))
-                            :eval
-                            (let [[_ p] (peek evals)]
-                              (deliver p {:value payload})
-                              (recur offset (pop evals)))
-                            :exception
-                            (let [[_ p] (peek evals)]
-                              (prn 'exception payload)
-                              (deliver p {:exception payload})
-                              (recur offset (pop evals)))
+                              (recur offset (transduce (take-while (fn [[end-offset]] (< end-offset (:offset payload)))) 
+                                              (completing (fn [evals _] (pop evals))) evals evals))
+                            :prompt
+                            (recur offset (<= offset (:offset payload)) id msgs-out)
+                            (:eval :exception) (do (some-> msgs-out (doto (a/>! val) a/close!)) (recur offset all-caught-up nil nil))
+                          
                             ; else
-                            (recur offset evals))))))
+                            ; todo filter by id
+                            (do (some-> msgs-out (a/>! val)) (recur offset all-caught-up eval-id msgs-out)))))))
     to-eval))
 
 (defn stacktrace-string
@@ -133,17 +130,23 @@
               do-eval
               (fn [code]
                 (if-some [eval-ch @unrepl-ch]
-                  (let [p (promise)]
-                    (a/>!! eval-ch [code p])
-                    (let [r @p]
-                      (if (contains? r :value)
-                        {:result (json/generate-string {:text/plain (with-out-str (pp/pprint (:value r) :as :unrepl/edn :strict 20 :width 72))
-                                                        #_#_:text/html (html/html (:value r))})}
-                        {:ename "Oops"
-                         :traceback (let [{:keys [ex phase]} (:exception r)]
-                                      [(str "Exception while " (case phase :read "reading the expression" :eval "evaluating the expression"
-                                                                 :print "printing the result" "doing something unexpected") ".")
-                                       (with-out-str (pp/pprint ex :as :unrepl/edn :strict 20 :width 72))])})))
+                  (let [msgs (a/chan)]
+                    (a/>!! eval-ch [code msgs])
+                    (loop [r nil]
+                      (if-some [[tag payload] (a/<!! msgs)]
+                        (recur
+                          (case tag
+                           :eval {:result (json/generate-string {:text/plain (with-out-str (pp/pprint payload :as :unrepl/edn :strict 20 :width 72))
+                                                                 #_#_:text/html (html/html (:value r))})}
+                           :exception {:ename "Oops"
+                                       :traceback (let [{:keys [ex phase]} payload]
+                                                    [(str "Exception while " (case phase :read "reading the expression" :eval "evaluating the expression"
+                                                                               :print "printing the result" "doing something unexpected") ".")
+                                                     (with-out-str (pp/pprint ex :as :unrepl/edn :strict 20 :width 72))])}
+                           :out (do (stdout payload) r)
+                           :err (do (stderr payload) r)
+                           r))
+                        r)))
                   (do 
                     (stderr "You need to connect first: /connect host:port")
                     {:result "nil" #_(json/generate-string {:text/plain "42"})})))]
