@@ -17,13 +17,17 @@
             [clojupyter.unrepl.elisions :as elisions]))
 
 (defn unrepl-client
-  "Creates a client from a Writer (in) and a Reader (out) -- it's inverted
+  "Creates a client from a connector.
+   A connector is a function of no-arg that returns a fresh pair of streams (as a map):
+   a Writer (in) and a Reader (out) -- it's inverted
    because we are considering input and output relativeley to the repl, not
    to the client."
-  [{:keys [^java.io.Writer in ^java.io.Reader out]}]
-  (with-open [blob (io/reader (io/resource "unrepl-blob.clj") :encoding "UTF-8")] (io/copy blob in))
-  (.flush in)
-  (let [^java.io.BufferedReader out (cond-> out (not (instance? java.io.BufferedReader out)) java.io.BufferedReader.)
+  [connector]
+  (let [{:keys [^java.io.Writer in ^java.io.Reader out]} (connector)
+        _ (doto in
+            (->> (io/copy blob) (with-open [blob (io/reader (io/resource "unrepl-blob.clj") :encoding "UTF-8")]))
+            .flush)
+        ^java.io.BufferedReader out (cond-> out (not (instance? java.io.BufferedReader out)) java.io.BufferedReader.)
         out (loop [] ; sync on hello
               (when-some [line (.readLine out)]
                 (if-some [[_ hello] (re-matches #".*?(\[:unrepl/hello.*)" line)]
@@ -51,7 +55,7 @@
           ; framed input because notebook style
           (doto in (.write (prn-str `(eval (read-string ~s)))) .flush)
           (recur))))
-    (a/go-loop [offset 0 all-caught-up true eval-id nil msgs-out nil]
+    (a/go-loop [offset 0 all-caught-up true eval-id nil msgs-out nil #_#_ aux nil]
       (some-> msgs-out (cond-> all-caught-up a/close!))
       (let [[val ch] (a/alts! (cond-> [unrepl-output] all-caught-up (conj to-eval)))]
         (condp = ch
@@ -62,6 +66,10 @@
                     (recur offset false eval-id msgs))
           unrepl-output (let [[tag payload id] val]
                           (case tag
+            #_#_                :unrepl/hello
+                            (let [{:keys [start-aux]} (:actions payload)]
+                              (when start-aux
+                                ))
                             ; misaligned forms are not tracked because all input is framed
                             #_#_:read
                               (recur offset (transduce (take-while (fn [[end-offset]] (< end-offset (:offset payload)))) 
@@ -73,7 +81,9 @@
                             ; else
                             ; todo filter by id
                             (do (some-> msgs-out (a/>! val)) (recur offset all-caught-up eval-id msgs-out)))))))
-    to-eval))
+    to-eval
+    #_{:eval to-eval
+      :aux to-aux}))
 
 (defn stacktrace-string
   "Return a nicely formatted string."
@@ -156,20 +166,20 @@
                 "connect" (do
                             (try
                               (let [[_ host port inner] (re-matches #"(?:(?:(\S+):)?(\d+)|(-))" (first args))
-                                    streams (if inner
-                                              (let [in-writer (java.io.PipedWriter.)
-                                                    in-reader (java.io.PipedReader. in-writer)
-                                                    out-writer (java.io.PipedWriter.)
-                                                    out-reader (java.io.PipedReader. out-writer)]
-                                                (a/thread
-                                                  (binding [*out* out-writer *in* (clojure.lang.LineNumberingPushbackReader. in-reader)]
-                                                    (clojure.main/repl)))
-                                                {:in in-writer
-                                                 :out out-reader})
-                                              (let [socket (java.net.Socket. ^String host (Integer/parseInt port))]
-                                                {:in (-> socket .getOutputStream io/writer)
-                                                 :out (-> socket .getInputStream io/reader)}))]
-                                (reset! unrepl-ch (unrepl-client streams))
+                                    connector (if inner
+                                                #(let [in-writer (java.io.PipedWriter.)
+                                                       in-reader (java.io.PipedReader. in-writer)
+                                                       out-writer (java.io.PipedWriter.)
+                                                       out-reader (java.io.PipedReader. out-writer)]
+                                                   (a/thread
+                                                     (binding [*out* out-writer *in* (clojure.lang.LineNumberingPushbackReader. in-reader)]
+                                                       (clojure.main/repl)))
+                                                   {:in in-writer
+                                                    :out out-reader})
+                                                #(let [socket (java.net.Socket. ^String host (Integer/parseInt port))]
+                                                   {:in (-> socket .getOutputStream io/writer)
+                                                    :out (-> socket .getInputStream io/reader)}))]
+                                (reset! unrepl-ch (unrepl-client connector))
                                 (stdout "Successfully connected!"))
                              (catch Exception e
                                (stderr "Failed connection.")))
