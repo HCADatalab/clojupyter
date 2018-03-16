@@ -4,7 +4,7 @@
    [clj-time.core :as time]
    [clj-time.format :as time-format]
    [clojupyter.misc.complete :as complete]
-   [clojupyter.protocol.zmq-comm :as pzmq]
+   [clojupyter.misc.zmq-comm :as zmqc]
    [clojupyter.protocol.nrepl-comm :as pnrepl]
    [clojure.pprint :as pp]
    [clojure.string :as str]
@@ -45,21 +45,21 @@
    :msg_type msg_type})
 
 (defn send-message-piece
-  [zmq-comm
+  [sockets
    socket msg]
   (log/debug "Sending" (with-out-str (pp/pprint msg)))
-  (pzmq/zmq-send zmq-comm socket (.getBytes msg) zmq/send-more)
+  (zmqc/zmq-send sockets socket (.getBytes msg) zmq/send-more)
   (log/debug "Finished sending part"))
 
 (defn finish-message
-  [zmq-comm
+  [sockets
    socket msg]
   (log/debug "Sending" (with-out-str (pp/pprint msg)))
-  (pzmq/zmq-send zmq-comm socket (.getBytes msg))
+  (zmqc/zmq-send sockets socket (.getBytes msg))
   (log/debug "Finished sending all"))
 
 (defn send-router-message
-  [zmq-comm
+  [sockets
    socket msg_type content parent-header session-id metadata signer idents]
   (log/info "Trying to send router message\n"
             (with-out-str (pp/pprint content)))
@@ -69,17 +69,17 @@
         content       (cheshire/generate-string content)]
    (when (not (empty? idents))
       (doseq [ident idents];
-        (pzmq/zmq-send zmq-comm socket ident zmq/send-more)))
-    (send-message-piece zmq-comm socket "<IDS|MSG>")
-    (send-message-piece zmq-comm socket (signer header parent-header metadata content))
-    (send-message-piece zmq-comm socket header)
-    (send-message-piece zmq-comm socket parent-header)
-    (send-message-piece zmq-comm socket metadata)
-    (finish-message     zmq-comm socket content))
+        (zmqc/zmq-send sockets socket ident zmq/send-more)))
+    (send-message-piece sockets socket "<IDS|MSG>")
+    (send-message-piece sockets socket (signer header parent-header metadata content))
+    (send-message-piece sockets socket header)
+    (send-message-piece sockets socket parent-header)
+    (send-message-piece sockets socket metadata)
+    (finish-message     sockets socket content))
   (log/info "Message sent"))
 
 (defn send-message
-  [zmq-comm
+  [sockets
    socket msg_type content parent-header metadata session-id signer]
   (log/info "Trying to send message\n"
             (with-out-str (pp/pprint content)))
@@ -87,13 +87,13 @@
         parent-header (cheshire/generate-string parent-header)
         metadata      (cheshire/generate-string metadata)
         content       (cheshire/generate-string content)]
-    (send-message-piece zmq-comm socket msg_type)
-    (send-message-piece zmq-comm socket "<IDS|MSG>")
-    (send-message-piece zmq-comm socket (signer header parent-header metadata content))
-    (send-message-piece zmq-comm socket header)
-    (send-message-piece zmq-comm socket parent-header)
-    (send-message-piece zmq-comm socket metadata)
-    (finish-message zmq-comm socket content))
+    (send-message-piece sockets socket msg_type)
+    (send-message-piece sockets socket "<IDS|MSG>")
+    (send-message-piece sockets socket (signer header parent-header metadata content))
+    (send-message-piece sockets socket header)
+    (send-message-piece sockets socket parent-header)
+    (send-message-piece sockets socket metadata)
+    (finish-message sockets socket content))
   (log/info "Message sent"))
 
 (defn get-message-signer [key]
@@ -180,16 +180,16 @@
 ;; Request and reply messages
 
 (defn input-request
-  [zmq-comm parent-header session-id signer ident]
+  [sockets parent-header session-id signer ident]
   (let [metadata {}
         content  {:prompt ">> "
                   :password false}]
-    (send-router-message zmq-comm :stdin-socket
+    (send-router-message sockets :stdin-socket
                          "input_request"
                          content parent-header session-id metadata signer ident)))
 
 (defn comm-open-reply
-  [zmq-comm
+  [sockets
    socket message signer]
   "Just close a comm immediately since we don't handle it yet"
   (let [parent-header (:header message)
@@ -197,24 +197,24 @@
         ident (:idents message)
         metadata {}
         content  (comm-open-reply-content message)]
-    (send-router-message zmq-comm socket
+    (send-router-message sockets socket
                          "comm_close"
                          content parent-header session-id metadata signer ident)))
 
 (defn kernel-info-reply
-  [zmq-comm
+  [sockets
    socket message signer]
   (let [parent-header (:header message)
         session-id (get-in message [:header :session])
         ident (:idents message)
         metadata {}
         content  (kernel-info-content)]
-    (send-router-message zmq-comm socket
+    (send-router-message sockets socket
                          "kernel_info_reply"
                          content parent-header session-id metadata signer ident)))
 
 (defn shutdown-reply
-  [alive zmq-comm nrepl-comm socket message signer]
+  [alive sockets nrepl-comm socket message signer]
   (let [parent-header (:header message)
         metadata {}
         restart (get-in message message [:content :restart])
@@ -224,58 +224,58 @@
         #_#_server @(:nrepl-server nrepl-comm)]
     (reset! alive false)
     #_(nrepl.server/stop-server server)
-    (send-router-message zmq-comm socket
+    (send-router-message sockets socket
                          "shutdown_reply"
                          content parent-header session-id metadata signer ident)
     (Thread/sleep 100)))
 
 (defn comm-info-reply
-  [zmq-comm
+  [sockets
    socket message signer]
   (let [parent-header (:header message)
         metadata {}
         content  {:comms
                   {:comm_id {:target_name ""}}}
         session-id (get-in message [:header :session])]
-    (send-message zmq-comm socket "comm_info_reply"
+    (send-message sockets socket "comm_info_reply"
                   content parent-header metadata session-id signer)))
 
 (defn comm-msg-reply
-  [zmq-comm
+  [sockets
    socket message socket signer]
   (let [parent-header (:header message)
         metadata {}
         content  {}
         session-id (get-in message [:header :session])]
-    (send-message zmq-comm socket "comm_msg_reply"
+    (send-message sockets socket "comm_msg_reply"
                   content parent-header metadata session-id signer)))
 
 (defn is-complete-reply
-  [zmq-comm
+  [sockets
    socket message signer]
   (let [parent-header (:header message)
         metadata {}
         content  (is-complete-reply-content message)
         session-id (get-in message [:header :session])
         ident (:idents message)]
-    (send-router-message zmq-comm socket
+    (send-router-message sockets socket
                          "is_complete_reply"
                          content parent-header session-id metadata signer ident)))
 
 (defn complete-reply
-  [zmq-comm nrepl-comm
+  [sockets nrepl-comm
    socket message signer]
   (let [parent-header (:header message)
         metadata {}
         content  (complete-reply-content nrepl-comm message)
         session-id (get-in message [:header :session])
         ident (:idents message)]
-    (send-router-message zmq-comm socket
+    (send-router-message sockets socket
                          "complete_reply"
                          content parent-header session-id metadata signer ident)))
 
 (defn history-reply
-  [zmq-comm
+  [sockets
    socket message signer]
   "returns REPL history, not implemented for now and returns a dummy message"
   {:history []})
@@ -283,7 +283,7 @@
 ;; Handlers
 
 (defn execute-request-handler
-  [alive zmq-comm nrepl-comm socket]
+  [alive sockets nrepl-comm socket]
   (let [execution-count (atom 1N)]
     (fn [message signer]
       (let [session-id (get-in message [:header :session])
@@ -291,10 +291,10 @@
             parent-header (:header message)
             code (get-in message [:content :code])
             silent (str/ends-with? code ";")]
-        (send-message zmq-comm :iopub-socket "execute_input"
+        (send-message sockets :iopub-socket "execute_input"
                       (pyin-content @execution-count message)
                       parent-header {} session-id signer)
-        (let [nrepl-resp (pnrepl/nrepl-eval nrepl-comm alive zmq-comm
+        (let [nrepl-resp (pnrepl/nrepl-eval nrepl-comm alive sockets
                                             code parent-header
                                             session-id signer ident)
               {:keys [result ename traceback]} nrepl-resp
@@ -304,7 +304,7 @@
                        :evalue ""
                        :execution_count @execution-count
                        :traceback traceback})]
-          (send-router-message zmq-comm :shell-socket "execute_reply"
+          (send-router-message sockets :shell-socket "execute_reply"
                                (if error
                                  error
                                  {:status "ok"
@@ -315,10 +315,10 @@
                                {}
                                signer ident)
           (if error
-            (send-message zmq-comm :iopub-socket "error"
+            (send-message sockets :iopub-socket "error"
                           error parent-header {} session-id signer)
             (when-not (or (= result "nil") silent)
-              (send-message zmq-comm :iopub-socket "execute_result"
+              (send-message sockets :iopub-socket "execute_result"
                             {:execution_count @execution-count
                              :data (cheshire/parse-string result true)
                              :metadata {}}

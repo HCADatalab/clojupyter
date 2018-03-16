@@ -1,14 +1,11 @@
-kernelDir = $(HOME)/.local/share/jupyter/kernels/clojure
-unreplKernelDir = $(HOME)/.local/share/jupyter/kernels/iclojure
+kernelDir = $(HOME)/.local/share/jupyter/kernels/iclojure
 
 ifeq ($(shell uname -s), Linux)
-        kernelDir:=$(HOME)/.local/share/jupyter/kernels/clojure
-        unreplKernelDir:=$(HOME)/.local/share/jupyter/kernels/iclojure
+        kernelDir:=$(HOME)/.local/share/jupyter/kernels/iclojure
 endif
 
 ifeq ($(shell uname -s), Darwin)
-        kernelDir:=$(HOME)/Library/Jupyter/kernels/clojure
-        unreplKernelDir:=$(HOME)/Library/Jupyter/kernels/iclojure
+        kernelDir:=$(HOME)/Library/Jupyter/kernels/iclojure
 endif
 
 all:
@@ -24,7 +21,4 @@ clean:
 install:
 	mkdir -p $(kernelDir)
 	cp bin/clojupyter $(kernelDir)/clojupyter
-	sed 's|KERNEL|'${kernelDir}/clojupyter'|;s|TYPE|nrepl|' resources/kernel.json > $(kernelDir)/kernel.json;\
-	mkdir -p $(unreplKernelDir)
-	cp bin/clojupyter $(unreplKernelDir)/clojupyter
-	sed 's|KERNEL|'${unreplKernelDir}/clojupyter'|;s|TYPE|unrepl|;s|Clojure|IClojure|;s|"clojure"|"iclojure"|' resources/kernel.json > $(unreplKernelDir)/kernel.json;\
+	sed 's|KERNEL|'${kernelDir}/clojupyter'|' resources/kernel.json > $(kernelDir)/kernel.json;\

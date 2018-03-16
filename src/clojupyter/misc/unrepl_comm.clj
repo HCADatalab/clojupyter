@@ -2,14 +2,12 @@
   (:require [cheshire.core :as cheshire]
             [clojupyter.protocol.nrepl-comm :as pnrepl]
             [clojupyter.misc.messages :refer :all]
-            [clojupyter.protocol.zmq-comm :as pzmq]
             [clojure.tools.nrepl :as nrepl]
             [clojure.tools.nrepl.misc :as nrepl.misc]
             [clojure.core.async :as a]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [taoensso.timbre :as log]
-            [zeromq.zmq :as zmq]
             [cheshire.core :as json]
             [clojupyter.print.text]
             [clojupyter.print.html :as html]
@@ -140,14 +138,14 @@
               ;; return nil
               )
             ))
-      (nrepl-eval [self alive zmq-comm code parent-header session-id signer ident]
-        (let [get-input (fn [] (input-request zmq-comm parent-header session-id signer ident))
+      (nrepl-eval [self alive sockets code parent-header session-id signer ident]
+        (let [get-input (fn [] (input-request sockets parent-header session-id signer ident))
               stdout     (fn [msg]
-                           (send-message zmq-comm :iopub-socket "stream"
+                           (send-message sockets :iopub-socket "stream"
                                          {:name "stdout" :text msg}
                                          parent-header {} session-id signer))
               stderr     (fn [msg]
-                           (send-message zmq-comm :iopub-socket "stream"
+                           (send-message sockets :iopub-socket "stream"
                                          {:name "stdout" :text msg}
                                          parent-header {} session-id signer))
               do-eval
