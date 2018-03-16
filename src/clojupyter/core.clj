@@ -10,6 +10,7 @@
             [clojure.tools.nrepl :as nrepl]
             [clojure.tools.nrepl.server :as nrepl.server]
             [clojure.walk :as walk]
+            [clojure.core.async :as a]
             [taoensso.timbre :as log]
             [zeromq.zmq :as zmq])
   (:import [java.net ServerSocket])
@@ -111,16 +112,13 @@
     (catch Exception e
       (exception-handler e))))
 
-(defn process-heartbeat [sockets socket]
-  (let [message (zmqc/zmq-recv sockets socket)]
-    (zmqc/zmq-send sockets socket message)))
-
-(defn heartbeat-loop [alive sockets]
-  (try
-    (while @alive
-      (process-heartbeat sockets :hb-socket))
-    (catch Exception e
-      (exception-handler e))))
+(defn heartbeat-loop [alive hb-socket]
+  (a/thread
+    (try
+      (while @alive
+        (zmq/send hb-socket (zmq/receive hb-socket)))
+      (catch Exception e
+        (exception-handler e)))))
 
 (defn shell-loop [alive sockets nrepl-comm signer checker]
   (let [socket        :shell-socket
@@ -159,14 +157,14 @@
                            (zmq/bind stdin-addr))
           hb-socket      (doto (zmq/socket context :rep)
                            (zmq/bind hb-addr))
-          sockets       {:shell-socket shell-socket, :iopub-socket iopub-socket, :stdin-socket stdin-socket, :control-socket control-socket, :hb-socket hb-socket}
+          sockets       {:shell-socket shell-socket, :iopub-socket iopub-socket, :stdin-socket stdin-socket, :control-socket control-socket}
           status-sleep 1000]
       (with-unrepl-comm
         (fn [nrepl-comm]
           (try
             (future (shell-loop     alive sockets nrepl-comm signer checker))
             (future (control-loop   alive sockets nrepl-comm signer checker))
-            (future (heartbeat-loop alive sockets))
+            (heartbeat-loop alive hb-socket)
             ;; check every second if state
             ;; has changed to anything other than alive
             (while @alive (Thread/sleep status-sleep))
