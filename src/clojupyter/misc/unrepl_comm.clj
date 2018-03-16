@@ -140,7 +140,7 @@
               ;; return nil
               )
             ))
-      (nrepl-eval [self states zmq-comm code parent-header session-id signer ident]
+      (nrepl-eval [self alive zmq-comm code parent-header session-id signer ident]
         (let [get-input (fn [] (input-request zmq-comm parent-header session-id signer ident))
               stdout     (fn [msg]
                            (send-message zmq-comm :iopub-socket "stream"

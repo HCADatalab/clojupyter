@@ -1,11 +1,11 @@
 (ns clojupyter.misc.display
   (:require [clojupyter.protocol.mime-convertible :as mc]
-            [clojupyter.misc.states :as states]
             [hiccup.core :as hiccup]))
 
-(defn display [obj]
-  (swap! (:display-queue @states/current-global-states) conj (mc/to-mime obj))
-  nil)
+#_(defn display [obj]
+   ; this function was meant as a kind of rich-print, commenting out for now
+   (swap! (:display-queue @states/current-global-states) conj (mc/to-mime obj))
+   nil)
 
 
 ;; Html

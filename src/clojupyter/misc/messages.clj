@@ -214,7 +214,7 @@
                          content parent-header session-id metadata signer ident)))
 
 (defn shutdown-reply
-  [states zmq-comm nrepl-comm socket message signer]
+  [alive zmq-comm nrepl-comm socket message signer]
   (let [parent-header (:header message)
         metadata {}
         restart (get-in message message [:content :restart])
@@ -222,7 +222,7 @@
         session-id (get-in message [:header :session])
         ident (:idents message)
         #_#_server @(:nrepl-server nrepl-comm)]
-    (reset! (:alive states) false)
+    (reset! alive false)
     #_(nrepl.server/stop-server server)
     (send-router-message zmq-comm socket
                          "shutdown_reply"
@@ -283,7 +283,7 @@
 ;; Handlers
 
 (defn execute-request-handler
-  [states zmq-comm nrepl-comm socket]
+  [alive zmq-comm nrepl-comm socket]
   (let [execution-count (atom 1N)]
     (fn [message signer]
       (let [session-id (get-in message [:header :session])
@@ -294,7 +294,7 @@
         (send-message zmq-comm :iopub-socket "execute_input"
                       (pyin-content @execution-count message)
                       parent-header {} session-id signer)
-        (let [nrepl-resp (pnrepl/nrepl-eval nrepl-comm states zmq-comm
+        (let [nrepl-resp (pnrepl/nrepl-eval nrepl-comm alive zmq-comm
                                             code parent-header
                                             session-id signer ident)
               {:keys [result ename traceback]} nrepl-resp

@@ -28,10 +28,10 @@
   pzmq/PZmqComm
   (zmq-send [self socket message]
     (apply zmq/send
-           [@(get self socket) message]))
+           [(get self socket) message]))
   (zmq-send [self socket message zmq-flag]
     (apply zmq/send
-           [@(get self socket) message zmq-flag]))
+           [(get self socket) message zmq-flag]))
   (zmq-read-raw-message [self socket flag]
     (let [recv-all (fn [socket flag]
                      (loop [acc (transient [])]
@@ -41,13 +41,13 @@
                              (recur new-acc)
                              (persistent! new-acc)))
                          nil)))]
-      (if-let [parts (recv-all @(get self socket) flag)]
+      (if-let [parts (recv-all (get self socket) flag)]
         (let [message (parts-to-message parts)]
           (log/info "Receive message\n" (with-out-str (pp/pprint message)))
           message)
         nil)))
   (zmq-recv [self socket]
-    (zmq/receive @(get self socket))))
+    (zmq/receive (get self socket))))
 
 (defn make-zmq-comm [shell-socket iopub-socket stdin-socket
                      control-socket hb-socket]
