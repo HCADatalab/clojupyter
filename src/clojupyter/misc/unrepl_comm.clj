@@ -16,34 +16,27 @@
             [net.cgrand.packed-printer :as pp]
             [clojupyter.unrepl.elisions :as elisions]))
 
-(defn unrepl-client
-  "Creates a client from a connector.
-   A connector is a function of no-arg that returns a fresh pair of streams (as a map):
-   a Writer (in) and a Reader (out) -- it's inverted
-   because we are considering input and output relativeley to the repl, not
-   to the client."
-  [connector]
-  (let [{:keys [^java.io.Writer in ^java.io.Reader out]} (connector)
-        _ (doto in
-            (->> (io/copy blob) (with-open [blob (io/reader (io/resource "unrepl-blob.clj") :encoding "UTF-8")]))
-            .flush)
-        ^java.io.BufferedReader out (cond-> out (not (instance? java.io.BufferedReader out)) java.io.BufferedReader.)
-        out (loop [] ; sync on hello
-              (when-some [line (.readLine out)]
-                (if-some [[_ hello] (re-matches #".*?(\[:unrepl/hello.*)" line)]
-                  (doto (java.io.PushbackReader. out (inc (count hello)))
-                    (.unread (int \newline))
-                    (.unread (.toCharArray hello)))
-                  (recur))))
+(defn- hello-sync [out]
+  (let [^java.io.BufferedReader out (cond-> out (not (instance? java.io.BufferedReader out)) java.io.BufferedReader.)]
+    (loop [] ; sync on hello
+      (when-some [line (.readLine out)]
+        (if-some [[_ hello] (re-matches #".*?(\[:unrepl/hello.*)" line)]
+          (doto (java.io.PushbackReader. out (inc (count hello)))
+            (.unread (int \newline))
+            (.unread (.toCharArray hello)))
+          (recur))))))
+
+(defn- client-loop [^java.io.Writer in out & {:keys [on-hello]}]
+  (let [to-eval (a/chan)
         unrepl-input (a/chan)
         unrepl-output (a/chan)
-        to-eval (a/chan)
-        [eof-tag :as eof] [(Object.)]]
+        [eof-tag :as eof] [(Object.)]
+        out (hello-sync out)]
     (a/thread ; edn tuples reader
       (loop []
         (let [[tag :as msg] (edn/read {:eof eof :default tagged-literal} out)]
           (prn 'GOT msg) 
-          (when-not (= eof tag)
+          (when-not (= eof-tag tag)
             (a/>!! unrepl-output msg)
             (if (= :bye tag)
               (a/close! unrepl-output msg)
@@ -55,33 +48,53 @@
           ; framed input because notebook style
           (doto in (.write (prn-str `(eval (read-string ~s)))) .flush)
           (recur))))
-    (a/go-loop [offset 0 all-caught-up true eval-id nil msgs-out nil #_#_ aux nil]
-      (some-> msgs-out (cond-> all-caught-up a/close!))
-      (let [[val ch] (a/alts! (cond-> [unrepl-output] all-caught-up (conj to-eval)))]
-        (condp = ch
-          to-eval (let [[code msgs] val
-                        code (str code \newline)
-                        offset (+ offset (count code))]
-                    (a/>! unrepl-input code)
-                    (recur offset false eval-id msgs))
-          unrepl-output (let [[tag payload id] val]
-                          (case tag
-            #_#_                :unrepl/hello
-                            (let [{:keys [start-aux]} (:actions payload)]
-                              (when start-aux
-                                ))
-                            ; misaligned forms are not tracked because all input is framed
-                            #_#_:read
-                              (recur offset (transduce (take-while (fn [[end-offset]] (< end-offset (:offset payload)))) 
-                                              (completing (fn [evals _] (pop evals))) evals evals))
-                            :prompt
-                            (recur offset (<= offset (:offset payload)) id msgs-out)
-                            (:eval :exception) (do (some-> msgs-out (doto (a/>! val) a/close!)) (recur offset all-caught-up nil nil))
+    (a/go-loop [offset 0 all-caught-up true eval-id nil msgs-out nil]
+           (some-> msgs-out (cond-> all-caught-up a/close!))
+           (let [[val ch] (a/alts! (cond-> [unrepl-output] all-caught-up (conj to-eval)))]
+             (condp = ch
+               to-eval (let [[code msgs] val
+                             code (str code \newline)
+                             offset (+ offset (count code))]
+                         (a/>! unrepl-input code)
+                         (recur offset false eval-id msgs))
+               unrepl-output (let [[tag payload id] val]
+                               (case tag
+                                 :unrepl/hello
+                                 (do
+                                   (when on-hello (on-hello payload))
+                                   (recur offset all-caught-up eval-id msgs-out))
+                                 ; misaligned forms are not tracked because all input is framed
+                                 #_#_:read
+                                   (recur offset (transduce (take-while (fn [[end-offset]] (< end-offset (:offset payload)))) 
+                                                   (completing (fn [evals _] (pop evals))) evals evals))
+                                 :prompt
+                                 (recur offset (<= offset (:offset payload)) id msgs-out)
+                                 (:eval :exception) (do (some-> msgs-out (doto (a/>! val) a/close!)) (recur offset all-caught-up nil nil))
                           
-                            ; else
-                            ; todo filter by id
-                            (do (some-> msgs-out (a/>! val)) (recur offset all-caught-up eval-id msgs-out)))))))
-    to-eval
+                                 ; else
+                                 ; todo filter by id
+                                 (do (some-> msgs-out (a/>! val)) (recur offset all-caught-up eval-id msgs-out)))))))
+    to-eval))
+
+(defn unrepl-client
+  "Creates a client from a connector.
+   A connector is a function of no-arg that returns a fresh pair of streams (as a map):
+   a Writer (in) and a Reader (out) -- it's inverted
+   because we are considering input and output relativeley to the repl, not
+   to the client."
+  [connector]
+  (let [{:keys [^java.io.Writer in ^java.io.Reader out]} (connector)]
+    (with-open [blob (io/reader (io/resource "unrepl-blob.clj") :encoding "UTF-8")]
+      (io/copy blob in))
+    (.flush in)
+    (client-loop in out
+      #_#_:on-hello
+      (fn [payload]
+        (let [{:keys [start-aux]} (:actions payload)]
+          (when start-aux
+            (let [{:keys [^java.io.Writer in ^java.io.Reader out]} (connector)
+                  _ (binding [*out* in] (prn start-aux))]
+              (client-loop in out))))))
     #_{:eval to-eval
       :aux to-aux}))
 
