@@ -44,9 +44,9 @@
    :msg_type msg_type})
 
 (defn send-message
-  ([socket msg-type content parent-header session-id metadata signer]
-    (send-message socket msg-type content parent-header session-id metadata signer [(.getBytes ^String msg-type)]))
-  ([socket msg-type content parent-header session-id metadata signer idents]
+  ([socket msg-type content parent-header session-id metadata key]
+    (send-message socket msg-type content parent-header session-id metadata key [(.getBytes ^String msg-type)]))
+  ([socket msg-type content parent-header session-id metadata key idents]
     (let [header        (cheshire/generate-string (new-header msg-type session-id))
           parent-header (cheshire/generate-string parent-header)
           metadata      (cheshire/generate-string metadata)
@@ -54,25 +54,12 @@
      (doseq [ident idents]
        (zmq/send socket ident zmq/send-more))
      (doseq [^String part ["<IDS|MSG>"
-                           (signer header parent-header metadata content)
+                           (if (empty? key) "" (sha256-hmac (str header parent-header metadata content) key))
                            header
                            parent-header
                            metadata]]
        (zmq/send socket (.getBytes part) zmq/send-more))
      (zmq/send socket (.getBytes ^String content)))))
-
-(defn get-message-signer [key]
-  "returns a function used to sign a message"
-  (if (empty? key)
-    (fn [header parent metadata content] "")
-    (fn [header parent metadata content]
-      (sha256-hmac (str header parent metadata content) key))))
-
-(defn get-message-checker [signer]
-  "returns a function to check an incoming message"
-  (fn [{:keys [signature header parent-header metadata content]}]
-    (let [our-signature (signer header parent-header metadata content)]
-      (= our-signature signature))))
 
 (defn parse-message [message]
   {:idents (:idents message)
@@ -145,17 +132,17 @@
 ;; Request and reply messages
 
 (defn input-request
-  [sockets parent-header session-id signer idents]
+  [sockets parent-header session-id key idents]
   (let [metadata {}
         content  {:prompt ">> "
                   :password false}]
     (send-message (:stdin-socket sockets)
                          "input_request"
-                         content parent-header session-id metadata signer idents)))
+                         content parent-header session-id metadata key idents)))
 
 (defn comm-open-reply
   [sockets
-   socket message signer]
+   socket message key]
   "Just close a comm immediately since we don't handle it yet"
   (let [parent-header (:header message)
         session-id (get-in message [:header :session])
@@ -164,11 +151,11 @@
         content  (comm-open-reply-content message)]
     (send-message (sockets socket)
                          "comm_close"
-                         content parent-header session-id metadata signer idents)))
+                         content parent-header session-id metadata key idents)))
 
 (defn kernel-info-reply
   [sockets
-   socket message signer]
+   socket message key]
   (let [parent-header (:header message)
         session-id (get-in message [:header :session])
         idents (:idents message)
@@ -176,10 +163,10 @@
         content  (kernel-info-content)]
     (send-message (sockets socket)
                          "kernel_info_reply"
-                         content parent-header session-id metadata signer idents)))
+                         content parent-header session-id metadata key idents)))
 
 (defn shutdown-reply
-  [alive sockets nrepl-comm socket message signer]
+  [alive sockets nrepl-comm socket message key]
   (let [parent-header (:header message)
         metadata {}
         restart (get-in message message [:content :restart])
@@ -191,33 +178,33 @@
     #_(nrepl.server/stop-server server)
     (send-message (sockets socket)
                          "shutdown_reply"
-                         content parent-header session-id metadata signer idents)
+                         content parent-header session-id metadata key idents)
     (Thread/sleep 100)))
 
 (defn comm-info-reply
   [sockets
-   socket message signer]
+   socket message key]
   (let [parent-header (:header message)
         metadata {}
         content  {:comms
                   {:comm_id {:target_name ""}}}
         session-id (get-in message [:header :session])]
     (send-message (sockets socket) "comm_info_reply"
-                  content parent-header session-id metadata signer)))
+                  content parent-header session-id metadata key)))
 
 (defn comm-msg-reply
   [sockets
-   socket message socket signer]
+   socket message socket key]
   (let [parent-header (:header message)
         metadata {}
         content  {}
         session-id (get-in message [:header :session])]
     (send-message (sockets socket) "comm_msg_reply"
-                  content parent-header session-id metadata signer)))
+                  content parent-header session-id metadata key)))
 
 (defn is-complete-reply
   [sockets
-   socket message signer]
+   socket message key]
   (let [parent-header (:header message)
         metadata {}
         content  (is-complete-reply-content message)
@@ -225,11 +212,11 @@
         idents (:idents message)]
     (send-message (sockets socket)
                          "is_complete_reply"
-                         content parent-header session-id metadata signer idents)))
+                         content parent-header session-id metadata key idents)))
 
 (defn complete-reply
   [sockets nrepl-comm
-   socket message signer]
+   socket message key]
   (let [parent-header (:header message)
         metadata {}
         content  (complete-reply-content nrepl-comm message)
@@ -237,11 +224,11 @@
         idents (:idents message)]
     (send-message (sockets socket)
                          "complete_reply"
-                         content parent-header session-id metadata signer idents)))
+                         content parent-header session-id metadata key idents)))
 
 (defn history-reply
   [sockets
-   socket message signer]
+   socket message key]
   "returns REPL history, not implemented for now and returns a dummy message"
   {:history []})
 
@@ -250,7 +237,7 @@
 (defn execute-request-handler
   [alive sockets nrepl-comm socket]
   (let [execution-count (atom 1N)]
-    (fn [message signer]
+    (fn [message key]
       (let [session-id (get-in message [:header :session])
             idents (:idents message)
             parent-header (:header message)
@@ -258,10 +245,10 @@
             silent (str/ends-with? code ";")]
         (send-message (:iopub-socket sockets) "execute_input"
                       (pyin-content @execution-count message)
-                      parent-header session-id {} signer)
+                      parent-header session-id {} key)
         (let [nrepl-resp (pnrepl/nrepl-eval nrepl-comm alive sockets
                                             code parent-header
-                                            session-id signer idents)
+                                            session-id key idents)
               {:keys [result ename traceback]} nrepl-resp
               error (if ename
                       {:status "error"
@@ -270,22 +257,22 @@
                        :execution_count @execution-count
                        :traceback traceback})]
           (send-message (:shell-socket sockets) "execute_reply"
-                               (if error
-                                 error
-                                 {:status "ok"
-                                  :execution_count @execution-count
-                                  :user_expressions {}})
-                               parent-header
-                               session-id
-                               {}
-                               signer idents)
+            (if error
+              error
+              {:status "ok"
+               :execution_count @execution-count
+               :user_expressions {}})
+            parent-header
+            session-id
+            {}
+            key idents)
           (if error
             (send-message (:iopub-socket sockets) "error"
-                          error parent-header session-id {} signer)
+                          error parent-header session-id {} key)
             (when-not (or (= result "nil") silent)
               (send-message (:iopub-socket sockets) "execute_result"
                             {:execution_count @execution-count
                              :data (cheshire/parse-string result true)
                              :metadata {}}
-                            parent-header session-id {} signer)))
+                            parent-header session-id {} key)))
           (swap! execution-count inc))))))
