@@ -141,13 +141,13 @@
       (nrepl-eval [self alive sockets code parent-header session-id signer ident]
         (let [get-input (fn [] (input-request sockets parent-header session-id signer ident))
               stdout     (fn [msg]
-                           (send-message sockets :iopub-socket "stream"
+                           (send-message (:iopub-socket sockets) "stream"
                                          {:name "stdout" :text msg}
-                                         parent-header {} session-id signer))
+                                         parent-header session-id {} signer))
               stderr     (fn [msg]
-                           (send-message sockets :iopub-socket "stream"
+                           (send-message (:iopub-socket sockets) "stream"
                                          {:name "stdout" :text msg}
-                                         parent-header {} session-id signer))
+                                         parent-header session-id {} signer))
               do-eval
               (fn [code]
                 (if-some [eval-ch @unrepl-ch]

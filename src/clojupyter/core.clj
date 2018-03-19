@@ -99,18 +99,19 @@
         parsed-message (parse-message message)
         parent-header  (:header parsed-message)
         session-id     (:session parent-header)]
-    (send-message sockets :iopub-socket "status"
-                  (status-content "busy") parent-header {} session-id signer)
+    (send-message (:iopub-socket sockets) "status"
+                  (status-content "busy") parent-header session-id {} signer)
     (handler parsed-message)
-    (send-message sockets :iopub-socket "status"
-                  (status-content "idle") parent-header {} session-id signer)))
+    (send-message (:iopub-socket sockets) "status"
+                  (status-content "idle") parent-header session-id {} signer)))
 
 (defn event-loop [alive sockets socket signer handler]
-  (try
-    (while @alive
-      (process-event alive sockets socket signer handler))
-    (catch Exception e
-      (exception-handler e))))
+  (a/thread
+    (try
+     (while @alive
+       (process-event alive sockets socket signer handler))
+     (catch Exception e
+       (exception-handler e)))))
 
 (defn heartbeat-loop [alive hb-socket]
   (a/thread
@@ -162,8 +163,8 @@
       (with-unrepl-comm
         (fn [nrepl-comm]
           (try
-            (future (shell-loop     alive sockets nrepl-comm signer checker))
-            (future (control-loop   alive sockets nrepl-comm signer checker))
+            (shell-loop     alive sockets nrepl-comm signer checker)
+            (control-loop   alive sockets nrepl-comm signer checker)
             (heartbeat-loop alive hb-socket)
             ;; check every second if state
             ;; has changed to anything other than alive
