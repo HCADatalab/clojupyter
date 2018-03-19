@@ -95,7 +95,7 @@
           (System/exit -1))))))
 
 (defn process-event [alive sockets socket key handler]
-  (let [message        (zmqc/zmq-read-raw-message sockets socket 0)
+  (let [message        (zmqc/zmq-read-raw-message (sockets socket))
         parsed-message (parse-message message)
         parent-header  (:header parsed-message)
         session-id     (:session parent-header)]
