@@ -123,9 +123,7 @@
 
 (defn shell-loop [alive sockets nrepl-comm key]
   (let [socket        :shell-socket
-        shell-handler (configure-shell-handler alive sockets nrepl-comm socket key)
-        sigint-handle (fn [] #_(pp/pprint (pnrepl/nrepl-interrupt nrepl-comm)))]
-    (reset! (beckon/signal-atom "INT") #{sigint-handle})
+        shell-handler (configure-shell-handler alive sockets nrepl-comm socket key)]
     (event-loop alive sockets socket key shell-handler)))
 
 (defn control-loop [alive sockets nrepl-comm key]
@@ -161,6 +159,7 @@
       (with-unrepl-comm
         (fn [nrepl-comm]
           (try
+            (reset! (beckon/signal-atom "INT") #{(fn [] #_(pp/pprint (pnrepl/nrepl-interrupt nrepl-comm)))})
             (shell-loop     alive sockets nrepl-comm key)
             (control-loop   alive sockets nrepl-comm key)
             (heartbeat-loop alive hb-socket)
