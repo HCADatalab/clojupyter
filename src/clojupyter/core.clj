@@ -1,7 +1,6 @@
 (ns clojupyter.core
   (:require [beckon]
             [clojupyter.middleware.mime-values]
-            [clojupyter.misc.zmq-comm :as zmqc]
             [clojupyter.misc.unrepl-comm :as unrepl-comm]
             [clojupyter.misc.messages :refer :all]
             [clojure.data.json :as json]
@@ -94,8 +93,20 @@
           (log/error "Message dump:" message)
           (System/exit -1))))))
 
+(defn parts-to-message [parts]
+  (let [delim "<IDS|MSG>"
+        delim-bytes (.getBytes delim "UTF-8")
+        [idents [_ & more-parts]] (split-with #(not (java.util.Arrays/equals delim-bytes ^bytes %)) parts)
+        blobs (map #(new String % "UTF-8") more-parts)
+        blob-names [:signature :header :parent-header :metadata :content]
+        message (merge
+                 {:idents idents :delimiter delim}
+                 (zipmap blob-names blobs)
+                 {:buffers (drop (count blob-names) blobs)})]
+    message))
+
 (defn process-event [alive sockets socket key handler]
-  (let [message        (zmqc/zmq-read-raw-message (sockets socket))
+  (let [message        (parts-to-message (zmq/receive-all (sockets socket)))
         parsed-message (parse-message message)
         parent-header  (:header parsed-message)
         session-id     (:session parent-header)]
