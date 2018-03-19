@@ -15,40 +15,12 @@
   (:import [java.net ServerSocket])
   (:gen-class :main true))
 
-(defn get-free-port!
-  "Get a free port. Problem?: might be taken before I use it."
-  []
-  (let [socket (ServerSocket. 0)
-        port (.getLocalPort socket)]
-    (.close socket)
-    port))
-
 (defn prep-config [args]
   (-> args
       first
       slurp
       json/read-str
       walk/keywordize-keys))
-
-(defn address [config service]
-  (str (:transport config) "://" (:ip config) ":" (service config)))
-
-(def clojupyter-middleware
-  '[clojupyter.middleware.mime-values/mime-values])
-
-(defn clojupyer-nrepl-handler []
-  ;; dynamically load to allow cider-jack-in to work
-  ;; see https://github.com/clojure-emacs/cider-nrepl/issues/447
-  (require 'cider.nrepl)
-  (apply nrepl.server/default-handler
-         (map resolve
-              (concat (ns-resolve 'cider.nrepl 'cider-nrepl-middleware)
-                      clojupyter-middleware))))
-
-(defn start-nrepl-server []
-  (nrepl.server/start-server
-   :port (get-free-port!)
-   :handler (clojupyer-nrepl-handler)))
 
 (defn exception-handler [e]
   (log/error (with-out-str (st/print-stack-trace e 20))))
@@ -145,6 +117,9 @@
 (defn- with-unrepl-comm [f]
   (let [unrepl-comm    (unrepl-comm/make-unrepl-comm)]
     (f unrepl-comm))) ; TODO: close
+
+(defn address [config service]
+  (str (:transport config) "://" (:ip config) ":" (service config)))
 
 (defn run-kernel [config]
   (let [hb-addr      (address config :hb_port)
