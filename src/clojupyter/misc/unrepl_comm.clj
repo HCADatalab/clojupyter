@@ -10,7 +10,7 @@
             [taoensso.timbre :as log]
             [cheshire.core :as json]
             [clojupyter.print.text]
-            [clojupyter.print.html :as html]
+            [clojupyter.print.html-pre :as html]
             [net.cgrand.packed-printer :as pp]
             [clojupyter.unrepl.elisions :as elisions]))
 
@@ -158,7 +158,7 @@
                         (recur
                           (case tag
                            :eval {:result (json/generate-string {:text/plain (with-out-str (pp/pprint payload :as :unrepl/edn :strict 20 :width 72))
-                                                                 #_#_:text/html (html/html (:value r))})}
+                                                                 #_#_:text/html (html/html payload)})}
                            :exception {:ename "Oops"
                                        :traceback (let [{:keys [ex phase]} payload]
                                                     [(str "Exception while " (case phase :read "reading the expression" :eval "evaluating the expression"
@@ -214,3 +214,5 @@
                  :completions
                  (map :candidate)
                  (into [])))))))
+
+; IPython.notebook.kernel.execute("(+ 1 1)", {iopub: {output: function() { console.log("reply", arguments) } }})
