@@ -6,6 +6,7 @@
             [clojure.tools.nrepl.misc :as nrepl.misc]
             [clojure.core.async :as a]
             [clojure.edn :as edn]
+            [clojure.string :as str]
             [clojure.java.io :as io]
             [taoensso.timbre :as log]
             [cheshire.core :as json]
@@ -23,6 +24,25 @@
             (.unread (int \newline))
             (.unread (.toCharArray hello)))
           (recur))))))
+
+(defn- sideloader-loop [^java.io.Writer in out ^ClassLoader cl]
+  (let [out (java.io.PushbackReader. out)]
+    (a/thread ; edn tuples reader
+      (while (not= (edn/read out) [:unrepl.jvm.side-loader/hello]))
+      (loop []
+        (let [[type s] (edn/read out)
+              path (case type
+                     :resource s
+                     :class (str (str/replace s "." "/") ".class")
+                     nil)
+              resp (when-some [url (some->> path (.getResource cl))]
+                     (let [bout (java.io.ByteArrayOutputStream.)]
+                       (with-open [cin (.openStream url)
+                                   b64out (.wrap (java.util.Base64/getEncoder) bout)]
+                         (io/copy cin b64out))
+                       (String. (.toByteArray bout) "ASCII")))]
+          (binding [*out* in] (prn resp)))
+        (recur)))))
 
 (defn- client-loop [^java.io.Writer in out & {:keys [on-hello]}]
   (let [to-eval (a/chan)
@@ -80,19 +100,23 @@
    a Writer (in) and a Reader (out) -- it's inverted
    because we are considering input and output relativeley to the repl, not
    to the client."
-  [connector]
+  [connector class-loader]
   (let [{:keys [^java.io.Writer in ^java.io.Reader out]} (connector)]
     (with-open [blob (io/reader (io/resource "unrepl-blob.clj") :encoding "UTF-8")]
       (io/copy blob in))
     (.flush in)
     (client-loop in out
-      #_#_:on-hello
+      :on-hello
       (fn [payload]
-        (let [{:keys [start-aux]} (:actions payload)]
-          (when start-aux
+        (let [{:keys [start-aux :unrepl.jvm/start-side-loader]} (:actions payload)]
+          #_(when start-aux
+             (let [{:keys [^java.io.Writer in ^java.io.Reader out]} (connector)
+                   _ (binding [*out* in] (prn start-aux))]
+               (client-loop in out)))
+          (when start-side-loader
             (let [{:keys [^java.io.Writer in ^java.io.Reader out]} (connector)
-                  _ (binding [*out* in] (prn start-aux))]
-              (client-loop in out))))))
+                  _ (binding [*out* in] (prn start-side-loader))]
+              (sideloader-loop in out class-loader))))))
     #_{:eval to-eval
       :aux to-aux}))
 
@@ -112,7 +136,8 @@
            clean))))
 
 (defn make-unrepl-comm []
-  (let [unrepl-ch (atom nil)]
+  (let [unrepl-ch (atom nil)
+        class-loader (clojure.lang.DynamicClassLoader. nil)]
     (reify
       pnrepl/PNreplComm
       (nrepl-trace [self]
@@ -172,37 +197,42 @@
                     (stderr "You need to connect first: /connect host:port")
                     {:result "nil" #_(json/generate-string {:text/plain "42"})})))]
           (if-some [[_ command args] (re-matches #"/(\S+)\s*(.*)" code)]
-            (let [args (re-seq #"\S+" args)]
-              (case command
-                "connect" (do
-                            (try
-                              (let [[_ host port inner] (re-matches #"(?:(?:(\S+):)?(\d+)|(-))" (first args))
-                                    connector (if inner
-                                                #(let [in-writer (java.io.PipedWriter.)
-                                                       in-reader (java.io.PipedReader. in-writer)
-                                                       out-writer (java.io.PipedWriter.)
-                                                       out-reader (java.io.PipedReader. out-writer)]
-                                                   (a/thread
-                                                     (binding [*out* out-writer *in* (clojure.lang.LineNumberingPushbackReader. in-reader)]
-                                                       (clojure.main/repl)))
-                                                   {:in in-writer
-                                                    :out out-reader})
-                                                #(let [socket (java.net.Socket. ^String host (Integer/parseInt port))]
-                                                   {:in (-> socket .getOutputStream io/writer)
-                                                    :out (-> socket .getInputStream io/reader)}))]
-                                (reset! unrepl-ch (unrepl-client connector))
-                                (stdout "Successfully connected!"))
-                             (catch Exception e
-                               (stderr "Failed connection.")))
-                            {:result "nil"})
-                (if-some [elided (elisions/lookup command)]
-                  (-> elided :form :get do-eval) ; todo check that reachable or that's an elision
-                  (do
-                    (stderr (str "Unknown command: /" command "."))
-                    {:result "nil"}))))
+            (case command
+              "connect" (let [args (re-seq #"\S+" args)]
+                          (try
+                            (let [[_ host port inner] (re-matches #"(?:(?:(\S+):)?(\d+)|(-))" (first args))
+                                  connector (if inner
+                                              #(let [in-writer (java.io.PipedWriter.)
+                                                     in-reader (java.io.PipedReader. in-writer)
+                                                     out-writer (java.io.PipedWriter.)
+                                                     out-reader (java.io.PipedReader. out-writer)]
+                                                 (a/thread
+                                                   (binding [*out* out-writer *in* (clojure.lang.LineNumberingPushbackReader. in-reader)]
+                                                     (clojure.main/repl)))
+                                                 {:in in-writer
+                                                  :out out-reader})
+                                              #(let [socket (java.net.Socket. ^String host (Integer/parseInt port))]
+                                                 {:in (-> socket .getOutputStream io/writer)
+                                                  :out (-> socket .getInputStream io/reader)}))]
+                              (reset! unrepl-ch (unrepl-client connector class-loader))
+                              (stdout "Successfully connected!"))
+                           (catch Exception e
+                             (stderr "Failed connection.")))
+                          {:result "nil"})
+              "cp" (try
+                     (let [arg (edn/read-string args)
+                           f (java.io.File. arg)]
+                       (.addURL class-loader (-> f .toURI .toURL))
+                       (stdout (str (pr-str (.getCanonicalPath f)) " added to the classpath!")))
+                     (catch Exception e
+                       (stderr "Something unexpected happened. The argument ro /cp must be a string.")))
+              (if-some [elided (elisions/lookup command)]
+                (-> elided :form :get do-eval) ; todo check that reachable or that's an elision
+                (do
+                  (stderr (str "Unknown command: /" command "."))
+                  {:result "nil"})))
             (do-eval code))))
       (nrepl-complete [self code]
-        []
         #_(let [ns @current-ns
                 result (-> (:nrepl-client self)
                            (nrepl/message {:op :complete
