@@ -1,13 +1,10 @@
 (ns clojupyter.core
   (:require [beckon]
-            [clojupyter.middleware.mime-values]
             [clojupyter.misc.unrepl-comm :as unrepl-comm]
             [clojupyter.misc.messages :refer :all]
-            [clojure.data.json :as json]
+            [cheshire.core :as json]
             [clojure.pprint :as pp]
             [clojure.stacktrace :as st]
-            [clojure.tools.nrepl :as nrepl]
-            [clojure.tools.nrepl.server :as nrepl.server]
             [clojure.walk :as walk]
             [clojure.core.async :as a]
             [taoensso.timbre :as log]
@@ -19,8 +16,7 @@
   (-> args
       first
       slurp
-      json/read-str
-      walk/keywordize-keys))
+      (json/parse-string keyword)))
 
 (defn exception-handler [e]
   (log/error (with-out-str (st/print-stack-trace e 20))))

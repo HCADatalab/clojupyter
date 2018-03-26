@@ -2,8 +2,6 @@
   (:require [cheshire.core :as cheshire]
             [clojupyter.protocol.nrepl-comm :as pnrepl]
             [clojupyter.misc.messages :refer :all]
-            [clojure.tools.nrepl :as nrepl]
-            [clojure.tools.nrepl.misc :as nrepl.misc]
             [clojure.core.async :as a]
             [clojure.edn :as edn]
             [clojure.string :as str]

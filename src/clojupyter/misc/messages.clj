@@ -3,13 +3,9 @@
    [cheshire.core :as cheshire]
    [clj-time.core :as time]
    [clj-time.format :as time-format]
-   [clojupyter.misc.complete :as complete]
    [clojupyter.protocol.nrepl-comm :as pnrepl]
    [clojure.pprint :as pp]
    [clojure.string :as str]
-   [clojure.tools.nrepl :as nrepl]
-   [clojure.tools.nrepl.misc :as nrepl.misc]
-   [clojure.tools.nrepl.server :as nrepl.server]
    [pandect.algo.sha256 :refer [sha256-hmac]]
    [taoensso.timbre :as log]
    [zeromq.zmq :as zmq]))
@@ -82,10 +78,13 @@
   "Returns whether or not what the user has typed is complete (ready for execution).
    Not yet implemented. May be that it is just used by jupyter-console."
   [message]
-  (if (complete/complete? (:code (:content message)))
-    {:status "complete"}
-    {:status "incomplete"})
-  )
+  (let [^String code (:code (:content message))]
+    (try
+     (when-not (.startsWith code "/")
+       (read-string (:code (:content message))))
+     {:status "complete"}
+     (catch Exception _
+       {:status "incomplete"}))))
 
 (defn complete-reply-content
   [nrepl-comm
