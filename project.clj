@@ -13,7 +13,8 @@
                  [org.zeromq/jeromq "0.3.4"] ; "0.3.5" (modern) fails on zmq/bind.
                  [pandect "0.5.4"]
                  [hiccup "1.0.5"]
-                 [net.cgrand/packed-printer "0.3.0"]]
+                 [net.cgrand/packed-printer "0.3.0"]
+                 [org.clojure/tools.deps.alpha "0.5.417"]]
   :aot [clojupyter.core]
   :main clojupyter.core
   :jvm-opts ["-Xmx250m"]

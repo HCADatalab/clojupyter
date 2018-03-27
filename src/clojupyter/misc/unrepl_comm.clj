@@ -10,7 +10,8 @@
             [clojupyter.print.text]
             [clojupyter.print.html-pre :as html]
             [net.cgrand.packed-printer :as pp]
-            [clojupyter.unrepl.elisions :as elisions]))
+            [clojupyter.unrepl.elisions :as elisions]
+            [clojure.tools.deps.alpha :as deps]))
 
 (defn- hello-sync [out]
   (let [^java.io.BufferedReader out (cond-> out (not (instance? java.io.BufferedReader out)) java.io.BufferedReader.)]
@@ -218,11 +219,23 @@
                           {:result "nil"})
               "cp" (try
                      (let [arg (edn/read-string args)
-                           f (java.io.File. arg)]
-                       (.addURL class-loader (-> f .toURI .toURL))
-                       (stdout (str (pr-str (.getCanonicalPath f)) " added to the classpath!")))
+                           paths
+                           (cond
+                             (map? arg)
+                             (let [deps (if (every? symbol? (keys arg))
+                                          {:deps arg}
+                                          arg)
+                                   libs (deps/resolve-deps deps {})]
+                               (into [] (mapcat :paths) (vals libs)))
+                             (string? arg) [arg]
+                             :else (throw (IllegalArgumentException. (str "Unsupported /cp argument: " arg))))]
+                       (doseq [path paths]
+                         (.addURL class-loader (-> path java.io.File. .toURI .toURL)))
+                       (stdout (str paths " added to the classpath!"))
+                       {:result "nil"})
                      (catch Exception e
-                       (stderr "Something unexpected happened. The argument ro /cp must be a string.")))
+                       (stderr "Something unexpected happened. The argument ro /cp must be a string.")
+                       {:result "nil"}))
               (if-some [elided (elisions/lookup command)]
                 (-> elided :form :get do-eval) ; todo check that reachable or that's an elision
                 (do
