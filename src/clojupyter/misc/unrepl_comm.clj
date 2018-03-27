@@ -1,6 +1,5 @@
 (ns clojupyter.misc.unrepl-comm
-  (:require [cheshire.core :as cheshire]
-            [clojupyter.protocol.nrepl-comm :as pnrepl]
+  (:require [clojupyter.protocol.nrepl-comm :as pnrepl]
             [clojupyter.misc.messages :refer :all]
             [clojure.core.async :as a]
             [clojure.edn :as edn]
