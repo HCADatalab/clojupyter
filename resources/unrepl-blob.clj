@@ -1,38 +1,40 @@
 (clojure.core/let [nop (clojure.core/constantly nil)
-e (clojure.core/atom (if (clojure.core/find-ns 'unrepl.repl$0dfHN4ClJPa8eIrBr$7GvthPizw) nop eval))]
+e (clojure.core/atom (if (clojure.core/find-ns 'unrepl.repl$Yr3iUsVBdMQc3tnN9M59tg_9weQ) nop eval))]
 (clojure.main/repl
 :read #(let [x (clojure.core/read)] (clojure.core/case x <<<FIN %2 x))
 :prompt nop
 :eval #(@e %)
 :print nop
 :caught #(do (set! *e %) (reset! e nop) (prn [:unrepl.upgrade/failed %]))))
-(ns unrepl.core
-(:refer-clojure :exclude [read eval print]))
-(def ^:once ^:private loaded-by "unrepl.repl$0dfHN4ClJPa8eIrBr$7GvthPizw")
+(ns unrepl.core (:refer-clojure :exclude [read eval print]))
+(def ^:once ^:private loaded-by "unrepl.repl")
 (def ^:once ^:dynamic *string-length* 80)
 (def ^:once ^:dynamic ^{:arglists '([x]) :doc "Atomically machine-prints its input to the output stream."} write)
-(def ^:once ^:dynamic *print-budget* "An indicative maximum number of values that may be printed before eliding everything else." 600)
 (defn ^:once non-eliding-write "use with care" [x]
 (binding [*print-length* Long/MAX_VALUE
 *print-level* Long/MAX_VALUE
 *string-length* Long/MAX_VALUE]
 (write x)))
-(declare ^:once ^:dynamic read ^:once ^:dynamic print ^:once ^:dynamic eval)(ns unrepl.print$0dfHN4ClJPa8eIrBr$7GvthPizw
-(:require [clojure.string :as str]
+(declare ^:once ^:dynamic read ^:once ^:dynamic print ^:once ^:dynamic eval)(ns
+unrepl.printer$nx7inu1prJtDkszedSdiMnjW$Oo
+(:require
+[clojure.string :as str]
 [clojure.edn :as edn]
 [clojure.main :as main]
 [unrepl.core :as unrepl]))
+(def ^:dynamic *print-budget*)
 (def defaults {#'*print-length* 10
 #'*print-level* 8
-#'unrepl/*string-length* 72
-#'unrepl/*print-budget* 80})
+#'unrepl/*string-length* 72})
 (defn ensure-defaults [bindings]
-(merge-with #(or %1 %2) bindings defaults))
+(let [bindings (merge-with #(or %1 %2) bindings defaults)]
+(assoc bindings #'*print-budget*
+(long (min (* 1N (bindings #'*print-level*) (bindings #'*print-length*)) Long/MAX_VALUE)))))
 (defprotocol MachinePrintable
 (-print-on [x write rem-depth]))
 (defn print-on [write x rem-depth]
 (let [rem-depth (dec rem-depth)
-budget (set! unrepl/*print-budget* (dec unrepl/*print-budget*))]
+budget (set! *print-budget* (dec *print-budget*))]
 (if (and (or (neg? rem-depth) (neg? budget)) (pos? (or *print-length* 1)))
 (binding [*print-length* 0]
 (print-on write x 0))
@@ -100,7 +102,7 @@ true)
 [write kvs rem-depth]
 (let [print-length *print-length*]
 (loop [kvs kvs i 0]
-(if (and (< i print-length) (pos? unrepl/*print-budget*))
+(if (and (< i print-length) (pos? *print-budget*))
 (when-some [[[k v] & kvs] (seq kvs)]
 (when (pos? i) (write ", "))
 (print-on write k rem-depth)
@@ -117,7 +119,7 @@ true)
 (loop [vs vs i 0]
 (when-some [[v :as vs] (blame-seq vs)]
 (when (pos? i) (write " "))
-(if (and (< i print-length) (pos? unrepl/*print-budget*) (may-print? vs))
+(if (and (< i print-length) (pos? *print-budget*) (may-print? vs))
 (if (and (tagged-literal? v) (= (:tag v) 'unrepl/lazy-error))
 (print-on write v rem-depth)
 (do
@@ -257,7 +259,7 @@ clojure.lang.TaggedLiteral
 unrepl/... (binding
 [*print-length* Long/MAX_VALUE
 *print-level* Long/MAX_VALUE
-unrepl/*print-budget* Long/MAX_VALUE
+*print-budget* Long/MAX_VALUE
 unrepl/*string-length* Long/MAX_VALUE]
 (write (str "#" (:tag x) " "))
 (print-on write (:form x) Long/MAX_VALUE))
@@ -333,20 +335,21 @@ Object
 (defn edn-str [x]
 (let [out (java.io.StringWriter.)
 write (fn [^String s] (.write out s))
-bindings (select-keys (get-thread-bindings) [#'*print-length* #'*print-level* #'unrepl/*string-length* #'unrepl/*print-budget*])]
+bindings (select-keys (get-thread-bindings) [#'*print-length* #'*print-level* #'unrepl/*string-length*])]
 (with-bindings (into (ensure-defaults bindings) {#'*print-readably* true})
 (print-on write x *print-level*))
 (str out)))
 (defn full-edn-str [x]
 (binding [*print-length* Long/MAX_VALUE
 *print-level* Long/MAX_VALUE
-unrepl/*print-budget* Long/MAX_VALUE
 unrepl/*string-length* Integer/MAX_VALUE]
 (edn-str x)))
-(ns unrepl.repl$0dfHN4ClJPa8eIrBr$7GvthPizw
-(:require [clojure.main :as m]
+(ns
+unrepl.repl$Yr3iUsVBdMQc3tnN9M59tg_9weQ
+(:require
+[clojure.main :as m]
 [unrepl.core :as unrepl]
-[unrepl.print$0dfHN4ClJPa8eIrBr$7GvthPizw :as p]
+[unrepl.printer$nx7inu1prJtDkszedSdiMnjW$Oo :as p]
 [clojure.edn :as edn]
 [clojure.java.io :as io]))
 (defn classloader
@@ -497,12 +500,12 @@ ref (java.lang.ref.SoftReference. x refq)]
 (defonce ^:private elision-store (soft-store #(list `fetch %)))
 (defn fetch [id]
 (if-some [[session-id x] ((:get elision-store) id)]
-(unrepl.print$0dfHN4ClJPa8eIrBr$7GvthPizw.WithBindings.
-(select-keys (some-> session-id session :bindings) [#'*print-length* #'*print-level* #'unrepl/*print-budget* #'unrepl/*string-length* #'p/*elide*])
+(unrepl.printer$nx7inu1prJtDkszedSdiMnjW$Oo.WithBindings.
+(select-keys (some-> session-id session :bindings) [#'*print-length* #'*print-level* #'unrepl/*string-length* #'p/*elide*])
 (cond
-(instance? unrepl.print$0dfHN4ClJPa8eIrBr$7GvthPizw.ElidedKVs x) x
+(instance? unrepl.printer$nx7inu1prJtDkszedSdiMnjW$Oo.ElidedKVs x) x
 (string? x) x
-(instance? unrepl.print$0dfHN4ClJPa8eIrBr$7GvthPizw.MimeContent x) x
+(instance? unrepl.printer$nx7inu1prJtDkszedSdiMnjW$Oo.MimeContent x) x
 :else (seq x)))
 p/unreachable))
 (defn interrupt! [session-id eval]
@@ -601,7 +604,14 @@ request-prompt)))
 (defn start [ext-session-actions]
 (with-local-vars [prompt-vars #{#'*ns* #'*warn-on-reflection*}
 current-eval-future nil]
-(let [session-id (keyword (gensym "session"))
+(let [ext-session-actions
+(into {}
+(map (fn [[k v]]
+[k (if (and (seq? v) (symbol? (first v)) (namespace (first v)))
+(list `ensure-ns v)
+v)]))
+ext-session-actions)
+session-id (keyword (gensym "session"))
 raw-out *out*
 in (ensure-unrepl-reader *in* (str "unrepl-" (name session-id)))
 actions-queue (java.util.concurrent.LinkedBlockingQueue.)
@@ -731,7 +741,7 @@ interrupted? #(.peek actions-queue)]
 (let [cl (.getContextClassLoader (Thread/currentThread))]
 (try
 (some->> session-id session :class-loader (.setContextClassLoader (Thread/currentThread)))
-(start)
+(start {})
 (finally
 (.setContextClassLoader (Thread/currentThread) cl)))))
 (defmacro ensure-ns [[fully-qualified-var-name & args :as expr]]
@@ -740,5 +750,5 @@ interrupted? #(.peek actions-queue)]
 ~expr))
 <<<FIN
 (clojure.core/ns user)
-(unrepl.repl$0dfHN4ClJPa8eIrBr$7GvthPizw/start (read))
-{}
+(unrepl.repl$Yr3iUsVBdMQc3tnN9M59tg_9weQ/start (clojure.edn/read {:default tagged-literal} *in*))
+{:complete (unrepl.actions.complete$r3nvtnu4U7Q0DJqlxqSIKsn5HaM/complete #unrepl/param :left #unrepl/param :right #unrepl/param :ns)}

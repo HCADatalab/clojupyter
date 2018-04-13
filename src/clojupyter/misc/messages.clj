@@ -78,9 +78,9 @@
   "Returns whether or not what the user has typed is complete (ready for execution).
    Not yet implemented. May be that it is just used by jupyter-console."
   [message]
-  (let [^String code (:code (:content message))]
+  (let [code (:code (:content message))]
     (try
-     (when-not (.startsWith code "/")
+     (when-not (re-matches #"\s*/(\S+)\s*(.*)" code)
        (read-string (:code (:content message))))
      {:status "complete"}
      (catch Exception _
@@ -89,27 +89,11 @@
 (defn complete-reply-content
   [nrepl-comm
    message]
-  (let [find-symbol (fn [code]
-                      (loop
-                          [pairs (map-indexed vector (reverse code))
-                           matched ""
-                           delimiter  nil]
-                        (let [character (second (first pairs))
-                              delimiter-map {\( :code
-                                             \" :string
-                                             \% :magic}
-                              delimiter (get delimiter-map character)]
-                          (if (and (not-empty pairs)
-                                   (nil? delimiter))
-                            (recur (rest pairs) (str character matched) delimiter)
-                            [(last (str/split matched #" "))
-                             delimiter]))))
-        content (:content message)
-        cursor_pos (:cursor_pos content)
-        code (subs (:code content) 0 cursor_pos)
-        [sym sym_type] (find-symbol code)]
-    {:matches (pnrepl/nrepl-complete nrepl-comm sym)
-     :cursor_start (- cursor_pos (count sym))
+  (let [{:keys [code cursor_pos]} (:content message)
+        left (subs code 0 cursor_pos)
+        right (subs code cursor_pos)]
+    {:matches (pnrepl/nrepl-complete nrepl-comm [left right])
+     :cursor_start cursor_pos #_(- cursor_pos (count sym)) ; TODO fix
      :cursor_end cursor_pos
      :status "ok"}))
 
@@ -265,13 +249,14 @@
             session-id
             {}
             key idents)
-          (if error
+          (cond
+            error
             (send-message (:iopub-socket sockets) "error"
-                          error parent-header session-id {} key)
-            (when-not (or (= result "nil") silent)
-              (send-message (:iopub-socket sockets) "execute_result"
-                            {:execution_count @execution-count
-                             :data (cheshire/parse-string result true)
-                             :metadata {}}
-                            parent-header session-id {} key)))
+                          (dissoc error :status :execution_count) parent-header session-id {} key)
+            (not (or (= result "nil") silent))
+            (send-message (:iopub-socket sockets) "execute_result"
+                          {:execution_count @execution-count
+                           :data (cheshire/parse-string result true)
+                           :metadata {}}
+                          parent-header session-id {} key))
           (swap! execution-count inc))))))

@@ -2,6 +2,7 @@
   (:require [clojupyter.protocol.nrepl-comm :as pnrepl]
             [clojupyter.misc.messages :refer :all]
             [clojure.core.async :as a]
+            [clojure.walk :as w]
             [clojure.edn :as edn]
             [clojure.string :as str]
             [clojure.java.io :as io]
@@ -12,6 +13,11 @@
             [net.cgrand.packed-printer :as pp]
             [clojupyter.unrepl.elisions :as elisions]
             [clojure.tools.deps.alpha :as deps]))
+
+(defn- pipe []
+  (let [pipe (java.nio.channels.Pipe/open)]
+    {:reader (-> pipe .source java.nio.channels.Channels/newInputStream (java.io.InputStreamReader. "UTF-8"))
+     :writer (-> pipe .sink java.nio.channels.Channels/newOutputStream (java.io.OutputStreamWriter. "UTF-8"))}))
 
 (defn- hello-sync [out]
   (let [^java.io.BufferedReader out (cond-> out (not (instance? java.io.BufferedReader out)) java.io.BufferedReader.)]
@@ -33,7 +39,9 @@
                      :resource s
                      :class (str (str/replace s "." "/") ".class")
                      nil)
-              resp (when-some [url (some->> path (.getResource cl))]
+              resp (when-some [url (when path
+                                     (or (io/resource (str "blob-libs/" path))
+                                       (.getResource cl path)))]
                      (let [bout (java.io.ByteArrayOutputStream.)]
                        (with-open [cin (.openStream url)
                                    b64out (.wrap (java.util.Base64/getEncoder) bout)]
@@ -41,6 +49,13 @@
                        (String. (.toByteArray bout) "ASCII")))]
           (binding [*out* in] (prn resp)))
         (recur)))))
+
+(defn emit-action [template args-map]
+  (w/postwalk
+    (fn [x]
+      #(cond-> %
+         (and (tagged-literal? %) (= (:tag %) :unrepl/param)) (-> :form args-map)))
+    template))
 
 (defn- client-loop [^java.io.Writer in out & {:keys [on-hello]}]
   (let [to-eval (a/chan)
@@ -99,24 +114,37 @@
    because we are considering input and output relativeley to the repl, not
    to the client."
   [connector class-loader]
-  (let [{:keys [^java.io.Writer in ^java.io.Reader out]} (connector)]
+  (let [{:keys [^java.io.Writer in ^java.io.Reader out]} (connector)
+        aux-ch (atom nil)
+        actions (atom {})]
     (with-open [blob (io/reader (io/resource "unrepl-blob.clj") :encoding "UTF-8")]
       (io/copy blob in))
     (.flush in)
-    (client-loop in out
-      :on-hello
-      (fn [payload]
-        (let [{:keys [start-aux :unrepl.jvm/start-side-loader]} (:actions payload)]
-          #_(when start-aux
-             (let [{:keys [^java.io.Writer in ^java.io.Reader out]} (connector)
-                   _ (binding [*out* in] (prn start-aux))]
-               (client-loop in out)))
-          (when start-side-loader
-            (let [{:keys [^java.io.Writer in ^java.io.Reader out]} (connector)
-                  _ (binding [*out* in] (prn start-side-loader))]
-              (sideloader-loop in out class-loader))))))
+    (let [user-ch (client-loop in out
+                    :on-hello
+                    (fn [payload]
+                      (let [{:keys [start-aux :unrepl.jvm/start-side-loader complete]} (swap! actions into (:actions payload))]
+                        (when start-aux
+                          (let [{:keys [^java.io.Writer in ^java.io.Reader out]} (connector)
+                                _ (binding [*out* in] (prn start-aux))]
+                            (reset! aux-ch (client-loop in out))))
+                        (when start-side-loader
+                          (let [{:keys [^java.io.Writer in ^java.io.Reader out]} (connector)
+                                _ (binding [*out* in] (prn start-side-loader))]
+                            (sideloader-loop in out class-loader))))))
+          all-ch (a/chan)]
+      (a/go-loop []
+        (when-some [[tag payload back-ch] (a/<! all-ch)]
+          (case tag
+            :eval (a/>! user-ch [payload back-ch])
+            :complete
+            (let [{:keys [complete]} @actions]
+              )
+            (a/>! @aux-ch [payload back-ch]))
+          (recur)))
+      all-ch)
     #_{:eval to-eval
-      :aux to-aux}))
+       :aux to-aux}))
 
 (defn stacktrace-string
   "Return a nicely formatted string."
@@ -175,7 +203,7 @@
               (fn [code]
                 (if-some [eval-ch @unrepl-ch]
                   (let [msgs (a/chan)]
-                    (a/>!! eval-ch [code msgs])
+                    (a/>!! eval-ch [:eval code msgs])
                     (loop [r nil]
                       (if-some [[tag payload] (a/<!! msgs)]
                         (recur
@@ -194,16 +222,14 @@
                   (do 
                     (stderr "You need to connect first: /connect host:port")
                     {:result "nil" #_(json/generate-string {:text/plain "42"})})))]
-          (if-some [[_ command args] (re-matches #"/(\S+)\s*(.*)" code)]
+          (if-some [[_ command args] (re-matches #"\s*/(\S+?)([\s,\[{(].*)" code)]
             (case command
               "connect" (let [args (re-seq #"\S+" args)]
                           (try
                             (let [[_ host port inner] (re-matches #"(?:(?:(\S+):)?(\d+)|(-))" (first args))
                                   connector (if inner
-                                              #(let [in-writer (java.io.PipedWriter.)
-                                                     in-reader (java.io.PipedReader. in-writer)
-                                                     out-writer (java.io.PipedWriter.)
-                                                     out-reader (java.io.PipedReader. out-writer)]
+                                              #(let [{in-writer :writer in-reader :reader} (pipe)
+                                                     {out-writer :writer out-reader :reader} (pipe)]
                                                  (a/thread
                                                    (binding [*out* out-writer *in* (clojure.lang.LineNumberingPushbackReader. in-reader)]
                                                      (clojure.main/repl)))
@@ -234,7 +260,7 @@
                        (stdout (str paths " added to the classpath!"))
                        {:result "nil"})
                      (catch Exception e
-                       (stderr "Something unexpected happened. The argument ro /cp must be a string.")
+                       (stderr "Something unexpected happened.")
                        {:result "nil"}))
               (if-some [elided (elisions/lookup command)]
                 (-> elided :form :get do-eval) ; todo check that reachable or that's an elision
@@ -242,7 +268,17 @@
                   (stderr (str "Unknown command: /" command "."))
                   {:result "nil"})))
             (do-eval code))))
-      (nrepl-complete [self code]
+      (nrepl-complete [self [left right]]
+        (let [eval-ch @unrepl-ch ; TODO test
+              msgs (a/chan)]
+          (a/>!! eval-ch [:complete [left right] msgs])
+          (a/<!! (a/go-loop []
+                   (if-some [[tag payload] (a/<!! msgs)]
+                     (case tag
+                       :eval payload
+                       :exception []
+                       (recur))
+                     []))))
         #_(let [ns @current-ns
                 result (-> (:nrepl-client self)
                            (nrepl/message {:op :complete
