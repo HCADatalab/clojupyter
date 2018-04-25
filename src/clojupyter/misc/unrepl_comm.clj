@@ -88,7 +88,7 @@
                              offset (+ offset (count code))]
                          (a/>! unrepl-input code)
                          (recur offset false eval-id msgs))
-               unrepl-output (let [[tag payload id] val]
+               unrepl-output (if-some [[tag payload id] val]
                                (case tag
                                  :unrepl/hello
                                  (do
@@ -104,7 +104,8 @@
                           
                                  ; else
                                  ; todo filter by id
-                                 (do (some-> msgs-out (a/>! val)) (recur offset all-caught-up eval-id msgs-out)))))))
+                                 (do (some-> msgs-out (a/>! val)) (recur offset all-caught-up eval-id msgs-out)))
+                               (do (some-> msgs-out (a/>! [:err "Connection to repl has been lost!" nil]) a/close!) (recur offset all-caught-up nil nil))))))
     to-eval))
 
 (defn unrepl-client
@@ -222,7 +223,7 @@
                   (do 
                     (stderr "You need to connect first: /connect host:port")
                     {:result "nil" #_(json/generate-string {:text/plain "42"})})))]
-          (if-some [[_ command args] (re-matches #"\s*/(\S+?)([\s,\[{(].*)" code)]
+          (if-some [[_ command args] (re-matches #"\s*/(\S+?)([\s,\[{(].*)?" code)]
             (case command
               "connect" (let [args (re-seq #"\S+" args)]
                           (try
