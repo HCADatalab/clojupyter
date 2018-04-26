@@ -223,7 +223,7 @@
                   (do 
                     (stderr "You need to connect first: /connect host:port")
                     {:result "nil" #_(json/generate-string {:text/plain "42"})})))]
-          (if-some [[_ command args] (re-matches #"\s*/(\S+?)([\s,\[{(].*)?" code)]
+          (if-some [[_ command args] (re-matches #"(?s)\s*/(\S+?)([\s,\[{(].*)?" code)]
             (case command
               "connect" (let [args (re-seq #"\S+" args)]
                           (try
