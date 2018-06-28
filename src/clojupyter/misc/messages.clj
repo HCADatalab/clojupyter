@@ -3,7 +3,6 @@
    [cheshire.core :as cheshire]
    [clj-time.core :as time]
    [clj-time.format :as time-format]
-   [clojupyter.protocol.nrepl-comm :as pnrepl]
    [clojure.pprint :as pp]
    [clojure.string :as str]
    [pandect.algo.sha256 :refer [sha256-hmac]]
@@ -67,24 +66,9 @@
 
 ;; Message contents
 
-(defn status-content [status]
-  {:execution_state status})
-
 (defn pyin-content [execution-count message]
   {:execution_count execution-count
    :code (get-in message [:content :code])})
-
-(defn is-complete-reply-content
-  "Returns whether or not what the user has typed is complete (ready for execution).
-   Not yet implemented. May be that it is just used by jupyter-console."
-  [message]
-  (let [code (:code (:content message))]
-    (try
-     (when-not (re-matches #"\s*/(\S+)\s*(.*)" code)
-       (read-string (:code (:content message))))
-     {:status "complete"}
-     (catch Exception _
-       {:status "incomplete"}))))
 
 (defn complete-reply-content
   [nrepl-comm
@@ -92,7 +76,7 @@
   (let [{:keys [code cursor_pos]} (:content message)
         left (subs code 0 cursor_pos)
         right (subs code cursor_pos)]
-    {:matches (pnrepl/nrepl-complete nrepl-comm [left right])
+    {#_#_:matches (pnrepl/nrepl-complete nrepl-comm [left right])
      :cursor_start cursor_pos #_(- cursor_pos (count sym)) ; TODO fix
      :cursor_end cursor_pos
      :status "ok"}))
@@ -136,127 +120,43 @@
                          "comm_close"
                          content parent-header session-id metadata key idents)))
 
-(defn kernel-info-reply
-  [sockets
-   socket message key]
-  (let [parent-header (:header message)
-        session-id (get-in message [:header :session])
-        idents (:idents message)
-        metadata {}
-        content  (kernel-info-content)]
-    (send-message (sockets socket)
-                         "kernel_info_reply"
-                         content parent-header session-id metadata key idents)))
-
-(defn shutdown-reply
-  [alive sockets nrepl-comm socket message key]
-  (let [parent-header (:header message)
-        metadata {}
-        restart (get-in message message [:content :restart])
-        content {:restart restart :status "ok"}
-        session-id (get-in message [:header :session])
-        idents (:idents message)
-        #_#_server @(:nrepl-server nrepl-comm)]
-    (reset! alive false)
-    #_(nrepl.server/stop-server server)
-    (send-message (sockets socket)
-                         "shutdown_reply"
-                         content parent-header session-id metadata key idents)
-    (Thread/sleep 100)))
-
-(defn comm-info-reply
-  [sockets
-   socket message key]
-  (let [parent-header (:header message)
-        metadata {}
-        content  {:comms
-                  {:comm_id {:target_name ""}}}
-        session-id (get-in message [:header :session])]
-    (send-message (sockets socket) "comm_info_reply"
-                  content parent-header session-id metadata key)))
-
-(defn comm-msg-reply
-  [sockets
-   socket message socket key]
-  (let [parent-header (:header message)
-        metadata {}
-        content  {}
-        session-id (get-in message [:header :session])]
-    (send-message (sockets socket) "comm_msg_reply"
-                  content parent-header session-id metadata key)))
-
-(defn is-complete-reply
-  [sockets
-   socket message key]
-  (let [parent-header (:header message)
-        metadata {}
-        content  (is-complete-reply-content message)
-        session-id (get-in message [:header :session])
-        idents (:idents message)]
-    (send-message (sockets socket)
-                         "is_complete_reply"
-                         content parent-header session-id metadata key idents)))
-
-(defn complete-reply
-  [sockets nrepl-comm
-   socket message key]
-  (let [parent-header (:header message)
-        metadata {}
-        content  (complete-reply-content nrepl-comm message)
-        session-id (get-in message [:header :session])
-        idents (:idents message)]
-    (send-message (sockets socket)
-                         "complete_reply"
-                         content parent-header session-id metadata key idents)))
-
-(defn history-reply
-  [sockets
-   socket message key]
-  "returns REPL history, not implemented for now and returns a dummy message"
-  {:history []})
-
 ;; Handlers
 
-(defn execute-request-handler
-  [alive sockets nrepl-comm socket]
-  (let [execution-count (atom 1N)]
-    (fn [message key]
-      (let [session-id (get-in message [:header :session])
-            idents (:idents message)
-            parent-header (:header message)
-            code (get-in message [:content :code])
-            silent (str/ends-with? code ";")]
-        (send-message (:iopub-socket sockets) "execute_input"
-                      (pyin-content @execution-count message)
-                      parent-header session-id {} key)
-        (let [nrepl-resp (pnrepl/nrepl-eval nrepl-comm alive sockets
-                                            code parent-header
-                                            session-id key idents)
-              {:keys [result ename traceback]} nrepl-resp
-              error (if ename
-                      {:status "error"
-                       :ename ename
-                       :evalue ""
-                       :execution_count @execution-count
-                       :traceback traceback})]
-          (send-message (:shell-socket sockets) "execute_reply"
-            (if error
-              error
-              {:status "ok"
-               :execution_count @execution-count
-               :user_expressions {}})
-            parent-header
-            session-id
-            {}
-            key idents)
-          (cond
+(defn execute-request [alive broadcast execution-count nrepl-comm socket message key]
+  (let [session-id (get-in message [:header :session])
+        idents (:idents message)
+        parent-header (:header message)
+        code (get-in message [:content :code])
+        silent (str/ends-with? code ";")]
+    (broadcast "execute_input" (pyin-content execution-count message))
+    #_(let [nrepl-resp (pnrepl/nrepl-eval nrepl-comm alive sockets
+                                          code parent-header
+                                          session-id key idents)
+            {:keys [result ename traceback]} nrepl-resp
+            error (if ename
+                    {:status "error"
+                     :ename ename
+                     :evalue ""
+                     :execution_count @execution-count
+                     :traceback traceback})]
+        (send-message (:shell-socket sockets) "execute_reply"
+          (if error
             error
-            (send-message (:iopub-socket sockets) "error"
-                          (dissoc error :status :execution_count) parent-header session-id {} key)
-            (not (or (= result "nil") silent))
-            (send-message (:iopub-socket sockets) "execute_result"
-                          {:execution_count @execution-count
-                           :data (cheshire/parse-string result true)
-                           :metadata {}}
-                          parent-header session-id {} key))
-          (swap! execution-count inc))))))
+            {:status "ok"
+             :execution_count @execution-count
+             :user_expressions {}})
+          parent-header
+          session-id
+          {}
+          key idents)
+        (cond
+          error
+          (send-message (:iopub-socket sockets) "error"
+                        (dissoc error :status :execution_count) parent-header session-id {} key)
+          (not (or (= result "nil") silent))
+          (send-message (:iopub-socket sockets) "execute_result"
+                        {:execution_count @execution-count
+                         :data (cheshire/parse-string result true)
+                         :metadata {}}
+                        parent-header session-id {} key))
+        (swap! execution-count inc))))

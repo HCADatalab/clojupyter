@@ -1,5 +1,6 @@
 {
  "argv": ["KERNEL", "{connection_file}"],
  "display_name": "IClojure",
- "language": "iclojure"
+ "language": "iclojure",
+ "interrupt_mode": "message"
 }
