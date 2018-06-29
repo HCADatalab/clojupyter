@@ -13,12 +13,15 @@
             [clojupyter.unrepl.elisions :as elisions]
             [clojure.tools.deps.alpha :as deps]))
 
-(defn- pipe []
+(defn pipe []
   (let [pipe (java.nio.channels.Pipe/open)]
     {:reader (-> pipe .source java.nio.channels.Channels/newInputStream (java.io.InputStreamReader. "UTF-8"))
      :writer (-> pipe .sink java.nio.channels.Channels/newOutputStream (java.io.OutputStreamWriter. "UTF-8"))}))
 
-(defn- hello-sync [out]
+(defn- ^java.io.PushbackReader hello-sync
+  "Takes the output of a freshly started unrepl and waits for the unrepl welcome message.
+   Returns a reader suitable for edn/read."
+  [out]
   (let [^java.io.BufferedReader out (cond-> out (not (instance? java.io.BufferedReader out)) java.io.BufferedReader.)]
     (loop [] ; sync on hello
       (when-some [line (.readLine out)]
@@ -27,6 +30,26 @@
             (.unread (int \newline))
             (.unread (.toCharArray hello)))
           (recur))))))
+
+(defn edn-reader-ch
+  "Takes a reader suitable for edn/read (as returned by hello-sync) and returns a channel to which read
+   edn messages are written.
+   Closing the channel closes the reader."
+  [out]
+  (let [out (hello-sync out)
+        ch (a/chan)
+        eof (Object.)]
+    (a/thread
+      (try
+        (loop []
+          (let [x (edn/read {:eof eof :default tagged-literal} out)]
+            (cond
+              (identical? eof x) (a/close! ch)
+              (a/>!! ch x) (recur)
+              :else (a/close! ch))))
+        (finally
+          (.close out))))
+    ch))
 
 (defn- sideloader-loop [^java.io.Writer in out ^ClassLoader cl]
   (let [out (java.io.PushbackReader. out)]
@@ -108,6 +131,15 @@
                                  (do (some-> msgs-out (a/>! val)) (recur offset all-caught-up eval-id msgs-out)))
                                (do (some-> msgs-out (a/>! [:err "Connection to repl has been lost!" nil]) a/close!) (recur offset all-caught-up nil nil))))))
     to-eval))
+
+(defn unrepl-connect
+  [connector #_class-loader]
+  (let [{:keys [^java.io.Writer in ^java.io.Reader out]} (connector)]
+    (with-open [blob (io/reader (io/resource "unrepl-blob.clj") :encoding "UTF-8")]
+      (io/copy blob in))
+    (.flush in)
+    {:in in
+     :edn-out (edn-reader-ch out)}))
 
 (defn unrepl-client
   "Creates a client from a connector.

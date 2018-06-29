@@ -1,16 +1,17 @@
 (ns clojupyter.core
   (:require [beckon]
     [cheshire.core :as json]
+    [clojure.java.io :as io]
     [clojupyter.misc.unrepl-comm :as unrepl-comm]
     [clojupyter.misc.messages :refer :all]
     [cheshire.core :as json]
-    [clojure.pprint :as pp]
     [clojure.stacktrace :as st]
     [clojure.walk :as walk]
     [clojure.core.async :as a]
     [clojure.string :as str]
     [taoensso.timbre :as log]
-    [zeromq.zmq :as zmq])
+    [zeromq.zmq :as zmq]
+    [net.cgrand.packed-printer :as pp])
   (:import [java.net ServerSocket])
   (:gen-class :main true))
 
@@ -102,6 +103,7 @@
           status-sleep 1000
           unrepl-comm (unrepl-comm/make-unrepl-comm)
           execution-counter (atom 1)
+          repl (atom nil)
           shell-handler
           (fn [{{msg-type :msg_type session :session :as header} :header idents :idents :as request} socket]
             (letfn [(broadcast [msg-type content]
@@ -121,28 +123,104 @@
                         code (get-in request [:content :code])
                         silent (str/ends-with? code ";")]
                     (broadcast "execute_input" {:execution_count execution-count :code code})
-                    (let [nrepl-resp {:result (json/generate-string {:text/plain "Yo!"})}
-                          #_(pnrepl/nrepl-eval nrepl-comm alive sockets
-                              code parent-header
-                              session-id key idents)
-                          {:keys [result ename traceback]} nrepl-resp
-                          error (if ename
-                                  {:status "error"
-                                   :ename ename
-                                   :evalue ""
+                    (if-some [[_ command args] (re-matches #"(?s)\s*/(\S+?)([\s,\[{(].*)?" code)]
+                      (case command
+                        "connect" (let [args (re-seq #"\S+" args)]
+                                    (try
+                                      (let [[_ host port inner] (re-matches #"(?:(?:(\S+):)?(\d+)|(-))" (first args))
+                                            connector (if inner
+                                                        #(let [{in-writer :writer in-reader :reader} (unrepl-comm/pipe)
+                                                               {out-writer :writer out-reader :reader} (unrepl-comm/pipe)]
+                                                           (a/thread
+                                                             (binding [*out* out-writer *in* (clojure.lang.LineNumberingPushbackReader. in-reader)]
+                                                               (clojure.main/repl)))
+                                                           {:in in-writer
+                                                            :out out-reader})
+                                                        #(let [socket (java.net.Socket. ^String host (Integer/parseInt port))]
+                                                           {:in (-> socket .getOutputStream io/writer)
+                                                            :out (-> socket .getInputStream io/reader)}))]
+                                        (reset! repl (unrepl-comm/unrepl-connect connector))
+                                        (broadcast "stream" {:name "stdout" :text "Successfully connected!"}))
+                                     (catch Exception e
+                                       (broadcast "stream" {:name "stderr" :text "Failed connection."})))
+                                    (reply {:status "ok"
+                                            :execution_count execution-count
+                                            :user_expressions {}}))
+                        #_#_"cp" (try
+                                   (let [arg (edn/read-string args)
+                                         paths
+                                         (cond
+                                           (map? arg)
+                                           (let [deps (if (every? symbol? (keys arg))
+                                                        {:deps arg}
+                                                        arg)
+                                                 libs (deps/resolve-deps deps {})]
+                                             (into [] (mapcat :paths) (vals libs)))
+                                           (string? arg) [arg]
+                                           :else (throw (IllegalArgumentException. (str "Unsupported /cp argument: " arg))))]
+                                     (doseq [path paths]
+                                       (.addURL class-loader (-> path java.io.File. .toURI .toURL)))
+                                     (stdout (str paths " added to the classpath!"))
+                                     {:result "nil"})
+                      (catch Exception e
+                        (stderr "Something unexpected happened.")
+                        {:result "nil"}))
+                        (if-some [elided nil #_(elisions/lookup command)]
+                          #_(-> elided :form :get do-eval) ; todo check that reachable or that's an elision
+                         (do
+                         (broadcast "stream" {:name "stderr" :text (str "Unknown command: /" command ".")})
+                           (reply {:status "ok"
                                    :execution_count execution-count
-                                   :traceback traceback})]
-                      (reply (or error
-                               {:status "ok"
-                                :execution_count execution-count
-                                :user_expressions {}}))
-                      (cond
-                        error (broadcast "error" (dissoc error :status :execution_count))
-                        (not (or (= result "nil") silent))
-                        (broadcast "execute_result"
-                          {:execution_count execution-count
-                           :data (json/parse-string result true)
-                           :metadata {}}))))
+                                   :user_expressions {}}))))
+                      (if-some [{:keys [in edn-out]} @repl]
+                       (do
+                         (doto in (.write (prn-str `(eval (read-string ~code)))) .flush)
+                         (loop [done false]
+                           (prn 'WAITING)
+                           (if-some [[tag payload id :as msg] (a/<!! edn-out)]
+                             (do (prn 'GOT msg)
+                               (case tag
+                                :prompt (when-not done (recur done))
+                                :eval (do
+                                        (broadcast "execute_result"
+                                          {:execution_count execution-count
+                                           :data {:text/plain (with-out-str (pp/pprint payload :as :unrepl/edn :strict 20 :width 72))
+                                                  #_#_:text/html (html/html payload)}
+                                           :metadata {}})
+                                        (reply {:status "ok"
+                                                :execution_count execution-count
+                                                :user_expressions {}})
+                                        (recur true))
+                                :exception (let [error
+                                                 {:status "error"
+                                                  :ename "Oops"
+                                                  :evalue ""
+                                                  :execution_count execution-count
+                                                  :traceback (let [{:keys [ex phase]} payload]
+                                                               [(str "Exception while " (case phase :read "reading the expression" :eval "evaluating the expression"
+                                                                                          :print "printing the result" "doing something unexpected") ".")
+                                                                (with-out-str (pp/pprint ex :as :unrepl/edn :strict 20 :width 72))])}]
+                                             (broadcast "error" (dissoc error :status :execution_count))
+                                             (reply error)
+                                             (recur true))
+                                :out
+                                (do
+                                  (broadcast "stream" {:name "stdout" :text payload})
+                                  (recur done))
+                                :err
+                                (do
+                                  (broadcast "stream" {:name "stderr" :text payload})
+                                  (recur done))
+                                (recur done)))
+                             (throw (ex-info "edn output from unrepl unexpectedly closed; the connection to the repl has probably been interrupted.")))))
+                       (let [error
+                             {:status "error"
+                              :ename "Oops"
+                              :evalue ""
+                              :execution_count execution-count
+                              :traceback ["Not connected, use /connect host:port or /connect - (for local)" ""]}]
+                         (broadcast "error" (dissoc error :status :execution_count))
+                         (reply error)))))
                   "kernel_info_request"
                   (reply (kernel-info-content))
                   "shutdown_request"
