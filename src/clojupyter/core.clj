@@ -3,6 +3,7 @@
     [cheshire.core :as json]
     [clojure.java.io :as io]
     [clojupyter.misc.unrepl-comm :as unrepl-comm]
+    [clojupyter.unrepl.elisions :as elisions]
     [clojupyter.misc.messages :refer :all]
     [cheshire.core :as json]
     [clojure.stacktrace :as st]
@@ -104,6 +105,10 @@
           unrepl-comm (unrepl-comm/make-unrepl-comm)
           execution-counter (atom 1)
           repl (atom nil)
+          aux (atom nil)
+          interrupt-form (atom nil)
+          connector (atom nil)
+          actions (atom nil)
           shell-handler
           (fn [{{msg-type :msg_type session :session :as header} :header idents :idents :as request} socket]
             (letfn [(broadcast [msg-type content]
@@ -121,24 +126,81 @@
                   "execute_request"
                   (let [execution-count (swap! execution-counter inc)
                         code (get-in request [:content :code])
-                        silent (str/ends-with? code ";")]
+                        silent (str/ends-with? code ";")
+                        [_ command args] (re-matches #"(?s)\s*/(\S+?)([\s,\[{(].*)?" code)
+                        elided (some-> command elisions/lookup :form :get)]
                     (broadcast "execute_input" {:execution_count execution-count :code code})
-                    (if-some [[_ command args] (re-matches #"(?s)\s*/(\S+?)([\s,\[{(].*)?" code)]
+                    (if (or (nil? command) elided)
+                      (if-some [{:keys [in edn-out]} @repl]
+                        (let [code-str (prn-str (or elided `(eval (read-string ~code))))]
+                          (doto in (.write code-str) .flush)
+                          (loop [done false]
+                            (prn 'WAITING)
+                            (if-some [[tag payload id :as msg] (a/<!! edn-out)]
+                              (do (prn 'GOT msg)
+                                (case tag
+                                 :unrepl/hello (let [{:keys [start-aux]} (reset! actions (:actions payload))]
+                                                 (when start-aux
+                                                   (reset! aux (unrepl-comm/aux-connect @connector start-aux)))
+                                                 (recur done))
+                                 :prompt (when-not done (recur done))
+                                 :started-eval (do (reset! interrupt-form (-> payload :actions :interrupt)) (recur true))
+                                 :eval (do
+                                         (broadcast "execute_result"
+                                           {:execution_count execution-count
+                                            :data {:text/plain (with-out-str (pp/pprint payload :as :unrepl/edn :strict 20 :width 72))
+                                                   #_#_:text/html (html/html payload)}
+                                            :metadata {}})
+                                         (reply {:status "ok"
+                                                 :execution_count execution-count
+                                                 :user_expressions {}})
+                                         (recur true))
+                                 :exception (let [error
+                                                  {:status "error"
+                                                   :ename "Oops"
+                                                   :evalue ""
+                                                   :execution_count execution-count
+                                                   :traceback (let [{:keys [ex phase]} payload]
+                                                                [(str "Exception while " (case phase :read "reading the expression" :eval "evaluating the expression"
+                                                                                           :print "printing the result" "doing something unexpected") ".")
+                                                                 (with-out-str (pp/pprint ex :as :unrepl/edn :strict 20 :width 72))])}]
+                                              (broadcast "error" (dissoc error :status :execution_count))
+                                              (reply error)
+                                              (recur true))
+                                 :out
+                                 (do
+                                   (broadcast "stream" {:name "stdout" :text payload})
+                                   (recur done))
+                                 :err
+                                 (do
+                                   (broadcast "stream" {:name "stderr" :text payload})
+                                   (recur done))
+                                 (recur done)))
+                              (throw (ex-info "edn output from unrepl unexpectedly closed; the connection to the repl has probably been interrupted.")))))
+                       (let [error
+                             {:status "error"
+                              :ename "Oops"
+                              :evalue ""
+                              :execution_count execution-count
+                              :traceback ["Not connected, use /connect host:port or /connect - (for local)" ""]}]
+                         (broadcast "error" (dissoc error :status :execution_count))
+                         (reply error)))
                       (case command
                         "connect" (let [args (re-seq #"\S+" args)]
                                     (try
                                       (let [[_ host port inner] (re-matches #"(?:(?:(\S+):)?(\d+)|(-))" (first args))
-                                            connector (if inner
-                                                        #(let [{in-writer :writer in-reader :reader} (unrepl-comm/pipe)
-                                                               {out-writer :writer out-reader :reader} (unrepl-comm/pipe)]
-                                                           (a/thread
-                                                             (binding [*out* out-writer *in* (clojure.lang.LineNumberingPushbackReader. in-reader)]
-                                                               (clojure.main/repl)))
-                                                           {:in in-writer
-                                                            :out out-reader})
-                                                        #(let [socket (java.net.Socket. ^String host (Integer/parseInt port))]
-                                                           {:in (-> socket .getOutputStream io/writer)
-                                                            :out (-> socket .getInputStream io/reader)}))]
+                                            connector (reset! connector
+                                                        (if inner
+                                                          #(let [{in-writer :writer in-reader :reader} (unrepl-comm/pipe)
+                                                                 {out-writer :writer out-reader :reader} (unrepl-comm/pipe)]
+                                                             (a/thread
+                                                               (binding [*out* out-writer *in* (clojure.lang.LineNumberingPushbackReader. in-reader)]
+                                                                 (clojure.main/repl)))
+                                                             {:in in-writer
+                                                              :out out-reader})
+                                                          #(let [socket (java.net.Socket. ^String host (Integer/parseInt port))]
+                                                             {:in (-> socket .getOutputStream io/writer)
+                                                              :out (-> socket .getInputStream io/reader)})))]
                                         (reset! repl (unrepl-comm/unrepl-connect connector))
                                         (broadcast "stream" {:name "stdout" :text "Successfully connected!"}))
                                      (catch Exception e
@@ -165,62 +227,11 @@
                       (catch Exception e
                         (stderr "Something unexpected happened.")
                         {:result "nil"}))
-                        (if-some [elided nil #_(elisions/lookup command)]
-                          #_(-> elided :form :get do-eval) ; todo check that reachable or that's an elision
-                         (do
-                         (broadcast "stream" {:name "stderr" :text (str "Unknown command: /" command ".")})
-                           (reply {:status "ok"
-                                   :execution_count execution-count
-                                   :user_expressions {}}))))
-                      (if-some [{:keys [in edn-out]} @repl]
-                       (do
-                         (doto in (.write (prn-str `(eval (read-string ~code)))) .flush)
-                         (loop [done false]
-                           (prn 'WAITING)
-                           (if-some [[tag payload id :as msg] (a/<!! edn-out)]
-                             (do (prn 'GOT msg)
-                               (case tag
-                                :prompt (when-not done (recur done))
-                                :eval (do
-                                        (broadcast "execute_result"
-                                          {:execution_count execution-count
-                                           :data {:text/plain (with-out-str (pp/pprint payload :as :unrepl/edn :strict 20 :width 72))
-                                                  #_#_:text/html (html/html payload)}
-                                           :metadata {}})
-                                        (reply {:status "ok"
-                                                :execution_count execution-count
-                                                :user_expressions {}})
-                                        (recur true))
-                                :exception (let [error
-                                                 {:status "error"
-                                                  :ename "Oops"
-                                                  :evalue ""
-                                                  :execution_count execution-count
-                                                  :traceback (let [{:keys [ex phase]} payload]
-                                                               [(str "Exception while " (case phase :read "reading the expression" :eval "evaluating the expression"
-                                                                                          :print "printing the result" "doing something unexpected") ".")
-                                                                (with-out-str (pp/pprint ex :as :unrepl/edn :strict 20 :width 72))])}]
-                                             (broadcast "error" (dissoc error :status :execution_count))
-                                             (reply error)
-                                             (recur true))
-                                :out
-                                (do
-                                  (broadcast "stream" {:name "stdout" :text payload})
-                                  (recur done))
-                                :err
-                                (do
-                                  (broadcast "stream" {:name "stderr" :text payload})
-                                  (recur done))
-                                (recur done)))
-                             (throw (ex-info "edn output from unrepl unexpectedly closed; the connection to the repl has probably been interrupted.")))))
-                       (let [error
-                             {:status "error"
-                              :ename "Oops"
-                              :evalue ""
-                              :execution_count execution-count
-                              :traceback ["Not connected, use /connect host:port or /connect - (for local)" ""]}]
-                         (broadcast "error" (dissoc error :status :execution_count))
-                         (reply error)))))
+                        (do
+                          (broadcast "stream" {:name "stderr" :text (str "Unknown command: /" command ".")})
+                          (reply {:status "ok"
+                                  :execution_count execution-count
+                                  :user_expressions {}})))))
                   "kernel_info_request"
                   (reply (kernel-info-content))
                   "shutdown_request"

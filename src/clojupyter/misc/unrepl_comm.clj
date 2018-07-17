@@ -141,6 +141,15 @@
     {:in in
      :edn-out (edn-reader-ch out)}))
 
+(defn aux-connect
+  [connector form]
+  (let [{:keys [^java.io.Writer in ^java.io.Reader out]} (connector)]
+    (doto in
+      (.write (prn-str form))
+      .flush)
+    {:in in
+     :edn-out (edn-reader-ch out)}))
+
 (defn unrepl-client
   "Creates a client from a connector.
    A connector is a function of no-arg that returns a fresh pair of streams (as a map):
