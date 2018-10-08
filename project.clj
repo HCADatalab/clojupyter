@@ -18,7 +18,7 @@
                  [org.clojure/tools.deps.alpha "0.5.417"]]
   :aot [clojupyter.core]
   :main clojupyter.core
-  :jvm-opts ["-Xmx250m"]
+ #_#_ :jvm-opts ["-Xmx250m"]
   :keep-non-project-classes true
   :profiles {:dev {:dependencies [[midje "1.9.0" :exclusions [org.clojure/clojure]]]
                    :plugins [[lein-midje "3.2.1"]]}})
