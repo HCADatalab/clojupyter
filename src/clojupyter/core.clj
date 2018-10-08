@@ -146,6 +146,40 @@
              (recur done)))
          (throw (ex-info "edn output from unrepl unexpectedly closed; the connection to the repl has probably been interrupted.")))))))
 
+(defn- self-connector []
+  (let [{in-writer :writer in-reader :reader} (unrepl-comm/pipe)
+        {out-writer :writer out-reader :reader} (unrepl-comm/pipe)]
+    (a/thread
+      (binding [*out* out-writer *in* (clojure.lang.LineNumberingPushbackReader. in-reader)]
+        (clojure.main/repl)))
+    {:in in-writer
+     :out out-reader}))
+
+(defn- connect [state connector]
+  (let [repl-in (a/chan)
+        repl-out (a/chan)]
+    (swap! state assoc :connector connector :repl nil :aux nil)
+    (unrepl-comm/unrepl-process (unrepl-comm/unrepl-connect connector) repl-in repl-out)
+    (swap! state assoc :repl {:in repl-in :out repl-out})
+    (a/go
+      (while-some [[tag payload id] (a/<! repl-out)]
+        (case tag
+          :unrepl/hello
+          (let [{:keys [start-aux] :as actions} (:actions payload)
+                aux-in (a/chan)
+                aux-out (a/chan)]
+            (prn 'GOTHELLO)
+            (swap! state assoc :actions actions)
+            (when start-aux
+              (prn 'STARTAUX)
+              (unrepl-comm/unrepl-process (unrepl-comm/aux-connect connector start-aux) aux-in aux-out)
+              (swap! state assoc :aux {:in aux-in :out aux-out})
+              (a/go
+                (prn 'STARTEDAUX)
+                (while-some [[tag payload id] (a/<! aux-out)]
+                  (prn 'AUX-DROPPED [tag payload id])))))
+          (prn 'DROPPED [tag payload id]))))))
+
 (defn run-kernel [config]
   (let [hb-addr      (address config :hb_port)
        shell-addr   (address config :shell_port)
@@ -164,12 +198,13 @@
          stdin (zmq-ch stdin-socket)
          status-sleep 1000
          unrepl-comm (unrepl-comm/make-unrepl-comm)
-         state (atom {:execution-count 1
-                      :repl nil
-                      :aux nil
-                      :interrupt-form nil
-                      :connector nil
-                      :actions nil})
+         state (doto
+                 (atom {:execution-count 1
+                       :repl nil
+                       :aux nil
+                       :interrupt-form nil
+                       :actions nil})
+                 (connect self-connector))
          msg-context
          (fn [socket {{msg-type :msg_type session :session :as header} :header idents :idents :as request}]
            (let [ctx (a/chan)
@@ -212,41 +247,12 @@
                              (case command
                                "connect" (let [args (re-seq #"\S+" args)]
                                            (try
-                                             (let [[_ host port inner] (re-matches #"(?:(?:(\S+):)?(\d+)|(-))" (first args))
-                                                   {:keys [connector]} (swap! state assoc :connector
-                                                                         (if inner
-                                                                           #(let [{in-writer :writer in-reader :reader} (unrepl-comm/pipe)
-                                                                                  {out-writer :writer out-reader :reader} (unrepl-comm/pipe)]
-                                                                              (a/thread
-                                                                                (binding [*out* out-writer *in* (clojure.lang.LineNumberingPushbackReader. in-reader)]
-                                                                                  (clojure.main/repl)))
-                                                                              {:in in-writer
-                                                                               :out out-reader})
-                                                                           #(let [socket (java.net.Socket. ^String host (Integer/parseInt port))]
-                                                                              {:in (-> socket .getOutputStream io/writer)
-                                                                               :out (-> socket .getInputStream io/reader)})))
-                                                   repl-in (a/chan)
-                                                   repl-out (a/chan)]
-                                               (unrepl-comm/unrepl-process (unrepl-comm/unrepl-connect connector) repl-in repl-out)
-                                               (swap! state assoc :repl {:in repl-in :out repl-out})
-                                               (a/go
-                                                 (while-some [[tag payload id] (a/<! repl-out)]
-                                                   (case tag
-                                                     :unrepl/hello
-                                                     (let [{:keys [start-aux] :as actions} (:actions payload)
-                                                           aux-in (a/chan)
-                                                           aux-out (a/chan)]
-                                                       (prn 'GOTHELLO)
-                                                       (swap! state assoc :actions actions)
-                                                       (when start-aux
-                                                         (prn 'STARTAUX)
-                                                         (unrepl-comm/unrepl-process (unrepl-comm/aux-connect connector start-aux) aux-in aux-out)
-                                                         (swap! state assoc :aux {:in aux-in :out aux-out})
-                                                         (a/go
-                                                           (prn 'STARTEDAUX)
-                                                           (while-some [[tag payload id] (a/<! aux-out)]
-                                                             (prn 'AUX-DROPPED [tag payload id])))))
-                                                     (prn 'DROPPED [tag payload id]))))
+                                             (let [[_ host port inner] (re-matches #"(?:(?:(\S+):)?(\d+)|(-))" (first args))]
+                                               (connect state (if inner
+                                                                self-connector
+                                                                #(let [socket (java.net.Socket. ^String host (Integer/parseInt port))]
+                                                                   {:in (-> socket .getOutputStream io/writer)
+                                                                    :out (-> socket .getInputStream io/reader)})))
                                                (a/>! ctx [:broadcast "stream" {:name "stdout" :text "Successfully connected!"}]))
                                              (catch Exception e
                                                (a/>! ctx [:broadcast "stream" {:name "stderr" :text "Failed connection."}])))
