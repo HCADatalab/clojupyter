@@ -1,7 +1,19 @@
 (clojure.core/let [nop (clojure.core/constantly nil)
-e (clojure.core/atom (if (clojure.core/find-ns 'unrepl.repl$Yr3iUsVBdMQc3tnN9M59tg_9weQ) nop eval))]
+done (promise)
+e (clojure.core/atom eval)]
+(-> (create-ns 'unrepl.repl$8tEiFThqxc6jlzHPa6U6MvbuLFc)
+(intern '-init-done)
+(alter-var-root
+(fn [v]
+(if (instance? clojure.lang.IDeref v)
+(do
+(reset! e (if-some [ex @v]
+(fn [_] (throw ex))
+nop))
+v)
+done))))
 (clojure.main/repl
-:read #(let [x (clojure.core/read)] (clojure.core/case x <<<FIN %2 x))
+:read #(let [x (clojure.core/read)] (clojure.core/case x <<<FIN (do (deliver done nil) %2) x))
 :prompt nop
 :eval #(@e %)
 :print nop
@@ -9,7 +21,7 @@ e (clojure.core/atom (if (clojure.core/find-ns 'unrepl.repl$Yr3iUsVBdMQc3tnN9M59
 (ns unrepl.core (:refer-clojure :exclude [read eval print]))
 (def ^:once ^:private loaded-by "unrepl.repl")
 (def ^:once ^:dynamic *string-length* 80)
-(def ^:once ^:dynamic ^{:arglists '([x]) :doc "Atomically machine-prints its input to the output stream."} write)
+(def ^:once ^:dynamic ^{:arglists '([x]) :doc "Atomically machine-prints its input (a triple) to the output stream."} write)
 (defn ^:once non-eliding-write "use with care" [x]
 (binding [*print-length* Long/MAX_VALUE
 *print-level* Long/MAX_VALUE
@@ -345,7 +357,7 @@ bindings (select-keys (get-thread-bindings) [#'*print-length* #'*print-level* #'
 unrepl/*string-length* Integer/MAX_VALUE]
 (edn-str x)))
 (ns
-unrepl.repl$Yr3iUsVBdMQc3tnN9M59tg_9weQ
+unrepl.repl$8tEiFThqxc6jlzHPa6U6MvbuLFc
 (:require
 [clojure.main :as m]
 [unrepl.core :as unrepl]
@@ -399,11 +411,20 @@ ex
  (throw (blame-ex ~phase t#)))))
 (defn atomic-write [^java.io.Writer w]
 (fn [x]
+(if (and (vector? x) (= (count x) 3))
+(let [[tag payload id] x
+s (blame :print (str "[" (p/edn-str tag)
+" " (p/edn-str payload)
+" " (p/edn-str id) "]"))]
+(locking w
+(.write w s)
+(.write w "\n")
+(.flush w)))
 (let [s (blame :print (p/edn-str x))]
 (locking w
 (.write w s)
 (.write w "\n")
-(.flush w)))))
+(.flush w))))))
 (definterface ILocatedReader
 (setCoords [coords-map]))
 (defn unrepl-reader [^java.io.Reader r]
@@ -750,5 +771,5 @@ interrupted? #(.peek actions-queue)]
 ~expr))
 <<<FIN
 (clojure.core/ns user)
-(unrepl.repl$Yr3iUsVBdMQc3tnN9M59tg_9weQ/start (clojure.edn/read {:default tagged-literal} *in*))
-{:complete (unrepl.actions.complete$r3nvtnu4U7Q0DJqlxqSIKsn5HaM/complete #unrepl/param :left #unrepl/param :right #unrepl/param :ns)}
+(unrepl.repl$8tEiFThqxc6jlzHPa6U6MvbuLFc/start (clojure.edn/read {:default tagged-literal} *in*))
+{}

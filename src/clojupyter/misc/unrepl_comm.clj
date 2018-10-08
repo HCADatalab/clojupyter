@@ -13,6 +13,12 @@
             [clojupyter.unrepl.elisions :as elisions]
             [clojure.tools.deps.alpha :as deps]))
 
+(defmacro ^:private while-some [binding & body]
+  `(loop []
+     (when-some ~binding
+       ~@body
+       (recur))))
+
 (defn pipe []
   (let [pipe (java.nio.channels.Pipe/open)]
     {:reader (-> pipe .source java.nio.channels.Channels/newInputStream (java.io.InputStreamReader. "UTF-8"))
@@ -149,6 +155,41 @@
       .flush)
     {:in in
      :edn-out (edn-reader-ch out)}))
+
+(defn unrepl-process
+  "Manages one connection at a time"
+  [{edn-out :edn-out ^java.io.Writer writer :in} input-ch output-ch]
+  (let [vstate (volatile! {:offset 0
+                           :pending-chs (sorted-map)
+                           :chs-to-id {}
+                           :ids-to-ch {}})
+        get-ch (fn [[tag payload id]]
+                 (let [{:keys [pending-chs chs-to-id ids-to-ch] :as state} @vstate]
+                   (or (ids-to-ch id)
+                     (when-let [ch (and id (= :read tag) (first (vals (subseq pending-chs >= (+ (:offset payload) (:len payload))))))]
+                       (vreset! vstate (-> state (update :ids-to-ch assoc id ch) (update :chs-to-id assoc ch id)))
+                       ch)
+                     output-ch)))
+        unmap-ch! (fn [ch]
+                    (let [{:keys [chs-to-id] :as state} @vstate]
+                      (vreset! vstate (-> state (update :ids-to-ch dissoc (chs-to-id ch))
+                                        (update :chs-to-id dissoc ch)))))]
+    (a/thread
+      (while-some [[msg ch] (a/alts!! (into [input-ch edn-out] (keys (:chs-to-id @vstate))))]
+        ; a big loop/recur was a bit unwieldly
+        (condp = ch
+          edn-out ; edn triple received from repl
+          (a/>!! (get-ch msg) msg)
+          input-ch ; user input (as [string ch]) received
+          (let [[^String code ch] msg
+                {:keys [offset] :as state} @vstate
+                offset (+ offset (count code))]
+            (vreset! vstate (-> state (assoc :offset offset)
+                              (update :pending-chs assoc offset ch)))
+            (doto writer (.write code) .flush))
+          (do ; else it's a close on an output channel
+            (assert (nil? msg) "Only close events should occur. Channel should not be buffered.")
+            (unmap-ch! ch)))))))
 
 (defn unrepl-client
   "Creates a client from a connector.
