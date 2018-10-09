@@ -57,7 +57,7 @@
           (.close out))))
     ch))
 
-(defn- sideloader-loop [^java.io.Writer in out ^ClassLoader cl]
+(defn sideloader-loop [^java.io.Writer in out ^ClassLoader cl]
   (let [out (java.io.PushbackReader. out)]
     (a/thread ; edn tuples reader
       (while (not= (edn/read out) [:unrepl.jvm.side-loader/hello]))

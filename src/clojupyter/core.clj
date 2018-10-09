@@ -2,6 +2,7 @@
   (:require [beckon]
     [cheshire.core :as json]
     [clojure.java.io :as io]
+    [clojure.edn :as edn]
     [clojupyter.misc.unrepl-comm :as unrepl-comm]
     [clojupyter.unrepl.elisions :as elisions]
     [clojupyter.misc.messages :as msg]
@@ -12,7 +13,8 @@
     [clojure.string :as str]
     [taoensso.timbre :as log]
     [zeromq.zmq :as zmq]
-    [net.cgrand.packed-printer :as pp])
+    [net.cgrand.packed-printer :as pp]
+    [clojure.tools.deps.alpha :as deps])
   (:import [java.net ServerSocket])
   (:gen-class :main true))
 
@@ -158,14 +160,14 @@
 (defn- connect [state connector]
   (let [repl-in (a/chan)
         repl-out (a/chan)]
-    (swap! state assoc :connector connector :repl nil :aux nil)
+    (swap! state assoc :connector connector :repl nil :aux nil :class-loader nil)
     (unrepl-comm/unrepl-process (unrepl-comm/unrepl-connect connector) repl-in repl-out)
     (swap! state assoc :repl {:in repl-in :out repl-out})
     (a/go
       (while-some [[tag payload id] (a/<! repl-out)]
         (case tag
           :unrepl/hello
-          (let [{:keys [start-aux] :as actions} (:actions payload)
+          (let [{:keys [start-aux :unrepl.jvm/start-side-loader] :as actions} (:actions payload)
                 aux-in (a/chan)
                 aux-out (a/chan)]
             (prn 'GOTHELLO)
@@ -177,7 +179,14 @@
               (a/go
                 (prn 'STARTEDAUX)
                 (while-some [[tag payload id] (a/<! aux-out)]
-                  (prn 'AUX-DROPPED [tag payload id])))))
+                  (prn 'AUX-DROPPED [tag payload id]))))
+            (when start-side-loader
+              (prn 'STARTSIDELOADER)
+              (let [class-loader (clojure.lang.DynamicClassLoader. nil)
+                    {:keys [^java.io.Writer in ^java.io.Reader out]} (connector)]
+                (binding [*out* in] (prn start-side-loader)) ; send upgrade form
+                (unrepl-comm/sideloader-loop in out class-loader)
+                (swap! state assoc :class-loader class-loader))))
           (prn 'DROPPED [tag payload id]))))))
 
 (defn run-kernel [config]
@@ -259,30 +268,31 @@
                                            (a/>! ctx [:reply {:status "ok"
                                                               :execution_count execution-count
                                                               :user_expressions {}}]))
-                              #_#_"cp" (try
-                                         (let [arg (edn/read-string args)
-                                               paths
-                                               (cond
-                                                 (map? arg)
-                                                 (let [deps (if (every? symbol? (keys arg))
-                                                              {:deps arg}
-                                                              arg)
-                                                       libs (deps/resolve-deps deps {})]
-                                                   (into [] (mapcat :paths) (vals libs)))
-                                                 (string? arg) [arg]
-                                                 :else (throw (IllegalArgumentException. (str "Unsupported /cp argument: " arg))))]
-                                           (doseq [path paths]
-                                             (.addURL class-loader (-> path java.io.File. .toURI .toURL)))
-                                           (stdout (str paths " added to the classpath!"))
-                                           {:result "nil"})
-                           (catch Exception e
-                             (stderr "Something unexpected happened.")
-                             {:result "nil"}))
-                             (do
-                               (a/>! ctx [:broadcast "stream" {:name "stderr" :text (str "Unknown command: /" command ".")}])
-                               (a/>! ctx [:reply {:status "ok"
-                                                  :execution_count execution-count
-                                                  :user_expressions {}}]))))
+                               "cp" (try
+                                      (let [arg (edn/read-string args)
+                                            paths
+                                            (cond
+                                              (map? arg)
+                                              (let [deps (if (every? symbol? (keys arg))
+                                                           {:deps arg}
+                                                           arg)
+                                                    libs (deps/resolve-deps deps {})]
+                                                (into [] (mapcat :paths) (vals libs)))
+                                              (string? arg) [arg]
+                                              :else (throw (IllegalArgumentException. (str "Unsupported /cp argument: " arg))))]
+                                        (doseq [path paths]
+                                          (.addURL ^clojure.lang.DynamicClassLoader (:class-loader @state) (-> path java.io.File. .toURI .toURL)))
+                                        (a/>! ctx [:broadcast "stream" {:name "stdout" :text (str paths " added to the classpath!")}])
+                                        {:result "nil"})
+                                      (catch Exception e
+                                        (a/>! ctx [:broadcast "stream" {:name "stderr" :text "Something unexpected happened."}])
+                                        {:result "nil"}))
+                               
+                              (do
+                                (a/>! ctx [:broadcast "stream" {:name "stderr" :text (str "Unknown command: /" command ".")}])
+                                (a/>! ctx [:reply {:status "ok"
+                                                   :execution_count execution-count
+                                                   :user_expressions {}}]))))
                            #_(let [out (a/chan)
                                    execution-count (swap! execution-counter inc)]
                               (a/>! framed-repl [ out])
