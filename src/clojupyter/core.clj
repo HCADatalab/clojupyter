@@ -148,6 +148,13 @@
              (recur done)))
          (throw (ex-info "edn output from unrepl unexpectedly closed; the connection to the repl has probably been interrupted.")))))))
 
+(defn action-call [form args-map]
+  (walk/prewalk (fn [x]
+                  (if (and (tagged-literal? x) (= 'unrepl/param (:tag x)))
+                    (args-map (:form x))
+                    x))
+    form))
+
 (defn- self-connector []
   (let [{in-writer :writer in-reader :reader} (unrepl-comm/pipe)
         {out-writer :writer out-reader :reader} (unrepl-comm/pipe)]
@@ -188,6 +195,55 @@
                 (unrepl-comm/sideloader-loop in out class-loader)
                 (swap! state assoc :class-loader class-loader))))
           (prn 'DROPPED [tag payload id]))))))
+
+(defn aux-eval [{:keys [in]} form]
+  (let [edn-out (a/chan 1 (filter (fn [[tag payload id]] (case tag (:eval :exception) true false))))]
+    (a/go
+      (when (some-> in (a/>! [(prn-str form) edn-out]))
+        (a/<! edn-out)))))
+
+(defn elision? [x]
+  (and (tagged-literal? x) (= 'unrepl/... (:tag x))))
+
+(defn elision-expand-1 [aux x]
+  (cond
+    (elision? x)
+    (if-some [form (-> x :form :get)]
+      (let [[tag payload] (a/<!! (aux-eval aux form))]
+        (case tag
+          :eval (recur aux payload)
+          :exception (throw (ex-info "Error while resolving elision." {:ex payload}))))
+      (throw (ex-info "Unresolvable elision" {})))
+    
+    (map? x)
+    (if-some [e (get x (tagged-literal 'unrepl/... nil))]
+      (-> x (dissoc (tagged-literal 'unrepl/... nil))
+        (into (elision-expand-1 aux e)))
+      x)
+    
+    (vector? x)
+    (if-let [last (when-some [last (peek x)]
+                    (and (elision? x) last))]
+      (recur aux (into (pop x) (elision-expand-1 aux last)))
+      x)
+    
+    (seq? x)
+    (lazy-seq
+      (when-some [s (seq x)]
+        (let [x (first s)]
+          (if (elision? x)
+            (elision-expand-1 aux x)
+            (cons x (elision-expand-1 aux (rest s)))))))
+    
+    :else x))
+
+(defn elision-expand-all [aux x]
+  (walk/prewalk
+    (fn [x]
+      (if (and (tagged-literal? x) (not (elision? x)))
+        (tagged-literal (:tag x) (elision-expand-all aux (:form x)))
+        (elision-expand-1 aux x)))
+    x))
 
 (defn run-kernel [config]
   (let [hb-addr      (address config :hb_port)
@@ -373,25 +429,34 @@
               
                       "is_complete_request"
                       (a/>! ctx [:reply {:status (if (-> request :content :code is-complete?) "complete" "incomplete")}])
+
                       "complete_request"
-                      (let [{:keys [code cursor_pos]} (:content request)
+                      (let [{{:keys [complete]} :actions aux :aux} @state
+                            {:keys [code cursor_pos]} (:content request)
                             left (subs code 0 cursor_pos)
-                            right (subs code cursor_pos)]
+                            right (subs code cursor_pos)
+                            [tag payload] (a/<! (aux-eval aux (action-call complete {:unrepl.complete/ns ''user ; <- TODO no
+                                                                                     :unrepl.complete/before left
+                                                                                     :unrepl.complete/after right})))
+                            payload (elision-expand-all aux (case tag :eval payload nil))
+                            max-left-del (transduce (map :left-del) max 0 payload)
+                            max-right-del (transduce (map :right-del) max 0 payload)
+                            candidates (map 
+                                         (fn [{:keys [candidate left-del right-del]}]
+                                           (str (subs left (- cursor_pos (- max-left-del left-del)))
+                                             candidate
+                                             (subs right right-del max-right-del)))
+                                         payload)]
                         (a/>! ctx
                           [:reply
-                           {#_#_:matches (pnrepl/nrepl-complete nrepl-comm [left right])
-                            :cursor_start cursor_pos #_(- cursor_pos (count sym)) ; TODO fix
-                            :cursor_end cursor_pos
+                           {:matches candidates
+                            :cursor_start (- cursor_pos max-left-del)
+                            :cursor_end (+ cursor_pos max-right-del)
                             :status "ok"}]))
                       
                       "interrupt_request"
-                      (let [{{:keys [in]} :aux :keys [interrupt-form]} @state
-                            edn-out (a/chan 1 (filter (fn [[tag payload id]] (prn 'INTGOT tag) (case tag (:eval :exception) true false))))]
-                        (prn 'INTERRUPTING)
-                        (when (and in (a/>! in [(prn-str interrupt-form) edn-out]))
-                          (prn 'INTERRUPTED?)
-                          (a/<! edn-out)) ; should we wait?
-                        (prn 'DONE-INTERRUPTING))
+                      (let [{aux :aux :keys [interrupt-form]} @state]
+                        (a/<! (aux-eval aux interrupt-form)))
                       
                       (do
                         (log/error "Message type" msg-type "not handled yet. Exiting.")

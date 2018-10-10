@@ -772,4 +772,4 @@ interrupted? #(.peek actions-queue)]
 <<<FIN
 (clojure.core/ns user)
 (unrepl.repl$8tEiFThqxc6jlzHPa6U6MvbuLFc/start (clojure.edn/read {:default tagged-literal} *in*))
-{}
+{:complete (unrepl.actions.complete$r3nvtnu4U7Q0DJqlxqSIKsn5HaM/complete #unrepl/param :unrepl.complete/before #unrepl/param :unrepl.complete/after #unrepl/param :unrepl.complete/ns)}
