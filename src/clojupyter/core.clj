@@ -103,6 +103,10 @@
     (catch Exception _
       false)))
 
+(defn handle-prompt [state payload]
+  (when-some [ns (get payload 'clojure.core/*ns*)]
+    (swap! state assoc :ns (:form ns))))
+
 (defn framed-eval-process [code ctx state]
   (let [{:keys [execution-count repl]} (swap! state update :execution-count inc)
         edn-out (a/chan)]
@@ -113,7 +117,9 @@
         (if-some [[tag payload id :as msg] (a/<! edn-out)]
           (do (prn 'GOT2 msg)
             (case tag
-             :prompt (when-not done (recur done))
+             :prompt (do
+                       (handle-prompt state payload)
+                       (when-not done (recur done)))
              :started-eval (do (swap! state assoc :interrupt-form (-> payload :actions :interrupt)) (recur done))
              :eval (do
                      (a/>! ctx [:broadcast "execute_result"
@@ -194,6 +200,9 @@
                 (binding [*out* in] (prn start-side-loader)) ; send upgrade form
                 (unrepl-comm/sideloader-loop in out class-loader)
                 (swap! state assoc :class-loader class-loader))))
+          
+          :prompt (handle-prompt state payload)
+          
           (prn 'DROPPED [tag payload id]))))))
 
 (defn aux-eval [{:keys [in]} form]
@@ -431,11 +440,11 @@
                       (a/>! ctx [:reply {:status (if (-> request :content :code is-complete?) "complete" "incomplete")}])
 
                       "complete_request"
-                      (let [{{:keys [complete]} :actions aux :aux} @state
+                      (let [{{:keys [complete]} :actions aux :aux ns :ns} @state
                             {:keys [code cursor_pos]} (:content request)
                             left (subs code 0 cursor_pos)
                             right (subs code cursor_pos)
-                            [tag payload] (a/<! (aux-eval aux (action-call complete {:unrepl.complete/ns ''user ; <- TODO no
+                            [tag payload] (a/<! (aux-eval aux (action-call complete {:unrepl.complete/ns (list 'quote ns)
                                                                                      :unrepl.complete/before left
                                                                                      :unrepl.complete/after right})))
                             payload (elision-expand-all aux (case tag :eval payload nil))
