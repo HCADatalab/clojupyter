@@ -117,7 +117,7 @@
         (if-some [[tag payload id :as msg] (a/<! edn-out)]
           (do (prn 'GOT2 msg)
             (case tag
-             :prompt (do
+             :prompt (do ; should not occur: prompts have no id
                        (handle-prompt state payload)
                        (when-not done (recur done)))
              :started-eval (do (swap! state assoc :interrupt-form (-> payload :actions :interrupt)) (recur done))
@@ -126,7 +126,8 @@
                                 {:execution_count execution-count
                                  :data {:text/plain (with-out-str (pp/pprint payload :as :unrepl/edn :strict 20 :width 72))
                                         #_#_:text/html (html/html payload)}
-                                 :metadata {}}])
+                                 :metadata {}
+                                 :transient {}}])
                      (a/>! ctx [:reply {:status "ok"
                                         :execution_count execution-count
                                         :user_expressions {}}])
@@ -333,8 +334,16 @@
                                            (a/>! ctx [:reply {:status "ok"
                                                               :execution_count execution-count
                                                               :user_expressions {}}]))
+
                                "cp" (try
                                       (let [arg (edn/read-string args)
+                                            arg (if (seq? arg)
+                                                  (let [{:keys [ns aux]} @state
+                                                        [tag payload] (a/<! (aux-eval aux `(do (in-ns '~ns) ~arg)))]
+                                                    (case tag
+                                                      :eval (elision-expand-all aux payload)
+                                                      :exception (throw (ex-info "Exception on aux." {:form arg :payload payload}))))
+                                                  arg)
                                             paths
                                             (cond
                                               (map? arg)
@@ -343,6 +352,7 @@
                                                            arg)
                                                     libs (deps/resolve-deps deps {})]
                                                 (into [] (mapcat :paths) (vals libs)))
+                                              
                                               (string? arg) [arg]
                                               :else (throw (IllegalArgumentException. (str "Unsupported /cp argument: " arg))))]
                                         (doseq [path paths]
@@ -350,73 +360,19 @@
                                         (a/>! ctx [:broadcast "stream" {:name "stdout" :text (str paths " added to the classpath!")}])
                                         {:result "nil"})
                                       (catch Exception e
+                                        (prn 'FAIL e)
                                         (a/>! ctx [:broadcast "stream" {:name "stderr" :text "Something unexpected happened."}])
                                         {:result "nil"}))
                                
-                              (do
+                              (do ; default
                                 (a/>! ctx [:broadcast "stream" {:name "stderr" :text (str "Unknown command: /" command ".")}])
                                 (a/>! ctx [:reply {:status "ok"
                                                    :execution_count execution-count
-                                                   :user_expressions {}}]))))
-                           #_(let [out (a/chan)
-                                   execution-count (swap! execution-counter inc)]
-                              (a/>! framed-repl [ out])
-                              (if-some [{:keys [in edn-out]} @repl]
-                                (let [code-str (prn-str (or elided `(eval (read-string ~code))))]
-                                  (doto in (.write code-str) .flush)
-                                  (loop [done false]
-                                    (prn 'WAITING)
-                                    (if-some [[tag payload id :as msg] (a/<!! edn-out)]
-                                      (do (prn 'GOT msg)
-                                        #_(case tag
-                                          :unrepl/hello (let [{:keys [start-aux]} (reset! actions (:actions payload))]
-                                                          (when start-aux
-                                                            (reset! aux (unrepl-comm/aux-connect @connector start-aux)))
-                                                          (recur done))
-                                          :prompt (when-not done (recur done))
-                                          :started-eval (do (reset! interrupt-form (-> payload :actions :interrupt)) (recur true))
-                                          :eval (do
-                                                  (broadcast "execute_result"
-                                                    {:execution_count execution-count
-                                                     :data {:text/plain (with-out-str (pp/pprint payload :as :unrepl/edn :strict 20 :width 72))
-                                                            #_#_:text/html (html/html payload)}
-                                                     :metadata {}})
-                                                  (reply {:status "ok"
-                                                          :execution_count execution-count
-                                                          :user_expressions {}})
-                                                  (recur true))
-                                          :exception (let [error
-                                                           {:status "error"
-                                                            :ename "Oops"
-                                                            :evalue ""
-                                                            :execution_count execution-count
-                                                            :traceback (let [{:keys [ex phase]} payload]
-                                                                         [(str "Exception while " (case phase :read "reading the expression" :eval "evaluating the expression"
-                                                                                                    :print "printing the result" "doing something unexpected") ".")
-                                                                          (with-out-str (pp/pprint ex :as :unrepl/edn :strict 20 :width 72))])}]
-                                                       (broadcast "error" (dissoc error :status :execution_count))
-                                                       (reply error)
-                                                       (recur true))
-                                          :out
-                                          (do
-                                            (broadcast "stream" {:name "stdout" :text payload})
-                                            (recur done))
-                                          :err
-                                          (do
-                                            (broadcast "stream" {:name "stderr" :text payload})
-                                            (recur done))
-                                          (recur done)))
-                                      (throw (ex-info "edn output from unrepl unexpectedly closed; the connection to the repl has probably been interrupted.")))))
-                               (let [error
-                                     {:status "error"
-                                      :ename "Oops"
-                                      :evalue ""
-                                      :execution_count execution-count
-                                      :traceback ["Not connected, use /connect host:port or /connect - (for local)" ""]}]
-                                 (broadcast "error" (dissoc error :status :execution_count))
-                                 (reply error))))))
+                                                   :user_expressions {}}]))))))
+                       
                        "kernel_info_request"
                        (a/>! ctx [:reply (msg/kernel-info-content)])
+
                        "shutdown_request"
                        (do
                          (reset! alive false)
@@ -448,6 +404,7 @@
                                                                                      :unrepl.complete/before left
                                                                                      :unrepl.complete/after right})))
                             payload (elision-expand-all aux (case tag :eval payload nil))
+                            _ (prn payload)
                             max-left-del (transduce (map :left-del) max 0 payload)
                             max-right-del (transduce (map :right-del) max 0 payload)
                             candidates (map 
