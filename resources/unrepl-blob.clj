@@ -1,7 +1,7 @@
 (clojure.core/let [nop (clojure.core/constantly nil)
 done (promise)
 e (clojure.core/atom eval)]
-(-> (create-ns 'unrepl.repl$8tEiFThqxc6jlzHPa6U6MvbuLFc)
+(-> (create-ns 'unrepl.repl$JheDmiOxCQTNBrUuDsZnDvb59lc)
 (intern '-init-done)
 (alter-var-root
 (fn [v]
@@ -28,7 +28,7 @@ done))))
 *string-length* Long/MAX_VALUE]
 (write x)))
 (declare ^:once ^:dynamic read ^:once ^:dynamic print ^:once ^:dynamic eval)(ns
-unrepl.printer$nx7inu1prJtDkszedSdiMnjW$Oo
+unrepl.printer$Z4aBFi34iyy94VC1WUZQs1VjhAE
 (:require
 [clojure.string :as str]
 [clojure.edn :as edn]
@@ -228,8 +228,12 @@ Object (fn [x]
 (defn- print-tag-lit-on [write tag form rem-depth]
 (write (str "#" tag " "))
 (print-on write form rem-depth))
+(defn- sat-inc [n]
+(if (= Long/MAX_VALUE n)
+n
+(unchecked-inc n)))
 (defn- print-trusted-tag-lit-on [write tag form rem-depth]
-(print-tag-lit-on write tag form (inc rem-depth)))
+(print-tag-lit-on write tag form (sat-inc rem-depth)))
 (defn StackTraceElement->vec'
 "Constructs a data representation for a StackTraceElement"
 {:added "1.9"}
@@ -343,7 +347,7 @@ Object
 (print-trusted-tag-lit-on write "unrepl/object"
 [(class x) (format "0x%x" (System/identityHashCode x)) (object-representation x)
 {:bean {unreachable (tagged-literal 'unrepl/... (*elide* (ElidedKVs. (bean x))))}}]
-(inc rem-depth)))))
+(sat-inc rem-depth)))))
 (defn edn-str [x]
 (let [out (java.io.StringWriter.)
 write (fn [^String s] (.write out s))
@@ -357,11 +361,11 @@ bindings (select-keys (get-thread-bindings) [#'*print-length* #'*print-level* #'
 unrepl/*string-length* Integer/MAX_VALUE]
 (edn-str x)))
 (ns
-unrepl.repl$8tEiFThqxc6jlzHPa6U6MvbuLFc
+unrepl.repl$JheDmiOxCQTNBrUuDsZnDvb59lc
 (:require
 [clojure.main :as m]
 [unrepl.core :as unrepl]
-[unrepl.printer$nx7inu1prJtDkszedSdiMnjW$Oo :as p]
+[unrepl.printer$Z4aBFi34iyy94VC1WUZQs1VjhAE :as p]
 [clojure.edn :as edn]
 [clojure.java.io :as io]))
 (defn classloader
@@ -521,12 +525,12 @@ ref (java.lang.ref.SoftReference. x refq)]
 (defonce ^:private elision-store (soft-store #(list `fetch %)))
 (defn fetch [id]
 (if-some [[session-id x] ((:get elision-store) id)]
-(unrepl.printer$nx7inu1prJtDkszedSdiMnjW$Oo.WithBindings.
+(unrepl.printer$Z4aBFi34iyy94VC1WUZQs1VjhAE.WithBindings.
 (select-keys (some-> session-id session :bindings) [#'*print-length* #'*print-level* #'unrepl/*string-length* #'p/*elide*])
 (cond
-(instance? unrepl.printer$nx7inu1prJtDkszedSdiMnjW$Oo.ElidedKVs x) x
+(instance? unrepl.printer$Z4aBFi34iyy94VC1WUZQs1VjhAE.ElidedKVs x) x
 (string? x) x
-(instance? unrepl.printer$nx7inu1prJtDkszedSdiMnjW$Oo.MimeContent x) x
+(instance? unrepl.printer$Z4aBFi34iyy94VC1WUZQs1VjhAE.MimeContent x) x
 :else (seq x)))
 p/unreachable))
 (defn interrupt! [session-id eval]
@@ -771,5 +775,5 @@ interrupted? #(.peek actions-queue)]
 ~expr))
 <<<FIN
 (clojure.core/ns user)
-(unrepl.repl$8tEiFThqxc6jlzHPa6U6MvbuLFc/start (clojure.edn/read {:default tagged-literal} *in*))
+(unrepl.repl$JheDmiOxCQTNBrUuDsZnDvb59lc/start (clojure.edn/read {:default tagged-literal} *in*))
 {:complete (unrepl.actions.complete$rH_N_7nQsmkfOrRjLdk$fEUUS6o/complete #unrepl/param :unrepl.complete/before #unrepl/param :unrepl.complete/after #unrepl/param :unrepl.complete/ns)}

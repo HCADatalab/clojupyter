@@ -92,6 +92,55 @@
 (defn address [config service]
   (str (:transport config) "://" (:ip config) ":" (service config)))
 
+(defn aux-eval [{:keys [in]} form]
+  (let [edn-out (a/chan 1 (filter (fn [[tag payload id]] (case tag (:eval :exception) true false))))]
+    (a/go
+      (when (some-> in (a/>! [(prn-str form) edn-out]))
+        (a/<! edn-out)))))
+
+(defn elision? [x]
+  (and (tagged-literal? x) (= 'unrepl/... (:tag x))))
+
+(defn elision-expand-1 [aux x]
+  (cond
+    (elision? x)
+    (if-some [form (-> x :form :get)]
+      (let [[tag payload] (a/<!! (aux-eval aux form))]
+        (case tag
+          :eval (recur aux payload)
+          :exception (throw (ex-info "Error while resolving elision." {:ex payload}))))
+      (throw (ex-info "Unresolvable elision" {})))
+    
+    (map? x)
+    (if-some [e (get x (tagged-literal 'unrepl/... nil))]
+      (-> x (dissoc (tagged-literal 'unrepl/... nil))
+        (into (elision-expand-1 aux e)))
+      x)
+    
+    (vector? x)
+    (if-let [last (when-some [last (peek x)]
+                    (and (elision? x) last))]
+      (recur aux (into (pop x) (elision-expand-1 aux last)))
+      x)
+    
+    (seq? x)
+    (lazy-seq
+      (when-some [s (seq x)]
+        (let [x (first s)]
+          (if (elision? x)
+            (elision-expand-1 aux x)
+            (cons x (elision-expand-1 aux (rest s)))))))
+    
+    :else x))
+
+(defn elision-expand-all [aux x]
+  (walk/prewalk
+    (fn [x]
+      (if (and (tagged-literal? x) (not (elision? x)))
+        (tagged-literal (:tag x) (elision-expand-all aux (:form x)))
+        (elision-expand-1 aux x)))
+    x))
+
 (defn is-complete?
   "Returns whether or not what the user has typed is complete (ready for execution).
    Not yet implemented. May be that it is just used by jupyter-console."
@@ -108,7 +157,7 @@
     (swap! state assoc :ns (:form ns))))
 
 (defn framed-eval-process [code ctx state]
-  (let [{:keys [execution-count repl]} (swap! state update :execution-count inc)
+  (let [{:keys [execution-count repl aux]} (swap! state update :execution-count inc)
         edn-out (a/chan)]
     (a/go
       (a/>! ctx [:broadcast "execute_input" {:execution_count execution-count :code code}])
@@ -121,11 +170,17 @@
                        (handle-prompt state payload)
                        (when-not done (recur done)))
              :started-eval (do (swap! state assoc :interrupt-form (-> payload :actions :interrupt)) (recur done))
-             :eval (do
+             :eval (let [_ (prn 'PAYLOAD payload)
+                         extra-reps (when-some [{:keys [content-type content]} (and (tagged-literal? payload) (= 'unrepl/object (:tag payload))
+                                                                                 (-> payload :form (nth 2) :attachment :form))]
+                                      (let [content (elision-expand-all aux content)] 
+                                        ; TODO fix: this assules content is set (could be file) and is unrepl/base64
+                                        (prn 'MIME content-type content)
+                                        {(or content-type "application/octet-stream") (:form content)}))]
                      (a/>! ctx [:broadcast "execute_result"
                                 {:execution_count execution-count
-                                 :data {:text/plain (with-out-str (pp/pprint payload :as :unrepl/edn :strict 20 :width 72))
-                                        #_#_:text/html (html/html payload)}
+                                 :data (into {:text/plain (with-out-str (pp/pprint payload :as :unrepl/edn :strict 20 :width 72))}
+                                         extra-reps)
                                  :metadata {}
                                  :transient {}}])
                      (a/>! ctx [:reply {:status "ok"
@@ -205,55 +260,6 @@
           :prompt (handle-prompt state payload)
           
           (prn 'DROPPED [tag payload id]))))))
-
-(defn aux-eval [{:keys [in]} form]
-  (let [edn-out (a/chan 1 (filter (fn [[tag payload id]] (case tag (:eval :exception) true false))))]
-    (a/go
-      (when (some-> in (a/>! [(prn-str form) edn-out]))
-        (a/<! edn-out)))))
-
-(defn elision? [x]
-  (and (tagged-literal? x) (= 'unrepl/... (:tag x))))
-
-(defn elision-expand-1 [aux x]
-  (cond
-    (elision? x)
-    (if-some [form (-> x :form :get)]
-      (let [[tag payload] (a/<!! (aux-eval aux form))]
-        (case tag
-          :eval (recur aux payload)
-          :exception (throw (ex-info "Error while resolving elision." {:ex payload}))))
-      (throw (ex-info "Unresolvable elision" {})))
-    
-    (map? x)
-    (if-some [e (get x (tagged-literal 'unrepl/... nil))]
-      (-> x (dissoc (tagged-literal 'unrepl/... nil))
-        (into (elision-expand-1 aux e)))
-      x)
-    
-    (vector? x)
-    (if-let [last (when-some [last (peek x)]
-                    (and (elision? x) last))]
-      (recur aux (into (pop x) (elision-expand-1 aux last)))
-      x)
-    
-    (seq? x)
-    (lazy-seq
-      (when-some [s (seq x)]
-        (let [x (first s)]
-          (if (elision? x)
-            (elision-expand-1 aux x)
-            (cons x (elision-expand-1 aux (rest s)))))))
-    
-    :else x))
-
-(defn elision-expand-all [aux x]
-  (walk/prewalk
-    (fn [x]
-      (if (and (tagged-literal? x) (not (elision? x)))
-        (tagged-literal (:tag x) (elision-expand-all aux (:form x)))
-        (elision-expand-1 aux x)))
-    x))
 
 (defn run-kernel [config]
   (let [hb-addr      (address config :hb_port)
