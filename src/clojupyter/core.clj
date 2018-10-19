@@ -199,14 +199,13 @@
                           (a/>! ctx [:broadcast "error" (dissoc error :status :execution_count)])
                           (a/>! ctx [:reply error])
                           (recur true))
-             :out
+
+             (:out :err)
              (do
-               (a/>! ctx [:broadcast "stream" {:name "stdout" :text payload}])
+               (a/>! ctx [:broadcast "stream" {:name (case tag :out "stdout" :err "stderr")
+                                               :text payload}])
                (recur done))
-             :err
-             (do
-               (a/>! ctx ["stream" {:name "stderr" :text payload}])
-               (recur done))
+
              (recur done)))
          (throw (ex-info "edn output from unrepl unexpectedly closed; the connection to the repl has probably been interrupted.")))))))
 
@@ -251,7 +250,7 @@
                   (prn 'AUX-DROPPED [tag payload id]))))
             (when start-side-loader
               (prn 'STARTSIDELOADER)
-              (let [class-loader (clojure.lang.DynamicClassLoader. nil)
+              (let [class-loader (clojure.lang.DynamicClassLoader. (.getContextClassLoader (Thread/currentThread)))
                     {:keys [^java.io.Writer in ^java.io.Reader out]} (connector)]
                 (binding [*out* in] (prn start-side-loader)) ; send upgrade form
                 (unrepl-comm/sideloader-loop in out class-loader)
@@ -278,7 +277,6 @@
          stdin-socket (doto (zmq/socket context :router) (zmq/bind stdin-addr))
          stdin (zmq-ch stdin-socket)
          status-sleep 1000
-         unrepl-comm (unrepl-comm/make-unrepl-comm)
          state (doto
                  (atom {:execution-count 1
                        :repl nil
@@ -410,7 +408,6 @@
                                                                                      :unrepl.complete/before left
                                                                                      :unrepl.complete/after right})))
                             payload (elision-expand-all aux (case tag :eval payload nil))
-                            _ (prn payload)
                             max-left-del (transduce (map :left-del) max 0 payload)
                             max-right-del (transduce (map :right-del) max 0 payload)
                             candidates (map 
@@ -475,26 +472,3 @@
   (log/set-level! :error)
   (run-kernel (prep-config args)))
 
-#_(defn bg-process
-   "new-pending is a channel upon which triples [ch v resource] are sent
-   when the write succeeds, resource will be put on the release channel.   "
-   [new-pending release]
-   ; pending-by-ch is the internal state, it's a map of channels to a collection
-   ; of pending writes each pending write being a pair [value-to-write resource-to-release]
-   (a/go-loop [pending-by-ch {}]
-     (let [ops (into [new-pending]
-                 (for [[ch [[v]]] pending-by-ch]
-                   [ch v]))
-           [v ch] (a/alts! ops)]
-       (if (= ch new-pending)
-         ; new pending write
-         (let [[ch v resource] v]
-           (recur (update pending-by-ch (fnil conj clojure.lang.PersistentQueue/EMPTY) [v resource])))
-         ; a pending write succeeded!
-         (let [q (pending-by-ch ch)
-               [_ res] (peek q)
-               q (pop q)]
-           (a/>! release res)
-           (recur (if (seq q)
-                    (assoc pending-by-ch ch q)
-                    (dissoc pending-by-ch ch))))))))
