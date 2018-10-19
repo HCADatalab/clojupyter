@@ -1,7 +1,7 @@
 (clojure.core/let [nop (clojure.core/constantly nil)
 done (promise)
 e (clojure.core/atom eval)]
-(-> (create-ns 'unrepl.repl$JheDmiOxCQTNBrUuDsZnDvb59lc)
+(-> (create-ns 'unrepl.repl$gOQFDUuzHjLIF1eKBU9gtZ8I4Xk)
 (intern '-init-done)
 (alter-var-root
 (fn [v]
@@ -361,7 +361,7 @@ bindings (select-keys (get-thread-bindings) [#'*print-length* #'*print-level* #'
 unrepl/*string-length* Integer/MAX_VALUE]
 (edn-str x)))
 (ns
-unrepl.repl$JheDmiOxCQTNBrUuDsZnDvb59lc
+unrepl.repl$gOQFDUuzHjLIF1eKBU9gtZ8I4Xk
 (:require
 [clojure.main :as m]
 [unrepl.core :as unrepl]
@@ -724,6 +724,7 @@ slcl (classloader cl
 *in* in
 *file* (-> in :coords :file)
 *source-path* *file*
+*default-data-reader-fn* tagged-literal
 p/*elide* (partial (:put elision-store) session-id)
 unrepl/*string-length* unrepl/*string-length*
 unrepl/write (atomic-write raw-out)
@@ -775,5 +776,5 @@ interrupted? #(.peek actions-queue)]
 ~expr))
 <<<FIN
 (clojure.core/ns user)
-(unrepl.repl$JheDmiOxCQTNBrUuDsZnDvb59lc/start (clojure.edn/read {:default tagged-literal} *in*))
+(unrepl.repl$gOQFDUuzHjLIF1eKBU9gtZ8I4Xk/start (clojure.edn/read {:default tagged-literal} *in*))
 {:complete (unrepl.actions.complete$rH_N_7nQsmkfOrRjLdk$fEUUS6o/complete #unrepl/param :unrepl.complete/before #unrepl/param :unrepl.complete/after #unrepl/param :unrepl.complete/ns)}

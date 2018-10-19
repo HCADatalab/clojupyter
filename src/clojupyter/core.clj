@@ -170,13 +170,18 @@
                        (handle-prompt state payload)
                        (when-not done (recur done)))
              :started-eval (do (swap! state assoc :interrupt-form (-> payload :actions :interrupt)) (recur done))
-             :eval (let [_ (prn 'PAYLOAD payload)
-                         extra-reps (when-some [{:keys [content-type content]} (and (tagged-literal? payload) (= 'unrepl/object (:tag payload))
-                                                                                 (-> payload :form (nth 2) :attachment :form))]
-                                      (let [content (elision-expand-all aux content)] 
-                                        ; TODO fix: this assules content is set (could be file) and is unrepl/base64
+             :eval (let [extra-reps (when-some [{:keys [content-type content]} 
+                                                (and (tagged-literal? payload)
+                                                  (case (:tag payload)
+                                                    unrepl/object (-> payload :form (nth 2) :attachment :form)
+                                                    unrepl/mime (:form payload)
+                                                    nil))]
+                                      (let [content (elision-expand-all aux content)
+                                            content (if (and (tagged-literal? content) (= 'unrepl/base64 (:tag content)))
+                                                      (:form content)
+                                                      content)] 
                                         (prn 'MIME content-type content)
-                                        {(or content-type "application/octet-stream") (:form content)}))]
+                                        {(or content-type "application/octet-stream") content}))]
                      (a/>! ctx [:broadcast "execute_result"
                                 {:execution_count execution-count
                                  :data (into {:text/plain (with-out-str (pp/pprint payload :as :unrepl/edn :strict 20 :width 72))}
