@@ -6,6 +6,7 @@
     [clojupyter.misc.unrepl-comm :as unrepl-comm]
     [clojupyter.unrepl.elisions :as elisions]
     [clojupyter.misc.messages :as msg]
+    [clojupyter.print.html :as li]
     [cheshire.core :as json]
     [clojure.stacktrace :as st]
     [clojure.walk :as walk]
@@ -14,6 +15,7 @@
     [taoensso.timbre :as log]
     [zeromq.zmq :as zmq]
     [net.cgrand.packed-printer :as pp]
+    [net.cgrand.xforms :as x]
     [clojure.tools.deps.alpha :as deps])
   (:import [java.net ServerSocket])
   (:gen-class :main true))
@@ -63,7 +65,7 @@
         (try
           (apply msg/send-message args)
           (catch Exception e
-            (prn 'FAIL args)))))
+            (prn 'FAIL e args)))))
     ch))
 
 (defn zmq-ch [socket]
@@ -184,7 +186,8 @@
                                         {(or content-type "application/octet-stream") content}))]
                      (a/>! ctx [:broadcast "execute_result"
                                 {:execution_count execution-count
-                                 :data (into {:text/plain (with-out-str (pp/pprint payload :as :unrepl/edn :strict 20 :width 72))}
+                                 :data (into {:text/plain (with-out-str (pp/pprint payload :as :unrepl/edn :strict 20 :width 72))
+                                              :text/iclojure-html (li/html payload)}
                                          extra-reps)
                                  :metadata {}
                                  :transient {}}])
@@ -287,7 +290,8 @@
                        :repl nil
                        :aux nil
                        :interrupt-form nil
-                       :actions nil})
+                       :actions nil
+                       :comm-targets {}})
                  (connect self-connector))
          msg-context
          (fn [socket {{msg-type :msg_type session :session :as header} :header idents :idents :as request}]
@@ -388,18 +392,39 @@
                          #_(nrepl.server/stop-server server)
                          (a/>! ctx [:reply {:status "ok" :restart false}])
                          (Thread/sleep 100)) ; magic timeout! TODO fix
-                
-                      ; COMMs were not handled anyway
-                      ; see http://jupyter-notebook.readthedocs.io/en/stable/comms.html
-                      ; and http://jupyter-client.readthedocs.io/en/stable/messaging.html
-                      #_#_"comm_info_request"
-                        (send-message socket "comm_info_reply"
-                          {:comms {:comm_id {:target_name ""}}} header session {} key) ; no idents?
-                      #_#_"comm_msg"
-                        (send-message socket "comm_msg_reply"
-                          {} header session {} key)
-                      #_#_"comm_open"           (comm-open-reply   sockets
-                                                  socket message key)
+                       
+                      "comm_open"
+                      (let [{:keys [comm-targets]} @state
+                            {:keys [comm_id target_name data]} (:content request)]
+                        (prn request (comm-targets target_name))
+                        (if-some [comm-target (comm-targets target_name)]
+                          (let [comm (comm-target comm_id data)]
+                            (swap! state update :comms assoc comm_id [target_name comm]))
+                          (a/>! ctx [:broadcast "comm_close" {:comm_id comm_id :data {}}])))
+                      
+                      "comm_msg"
+                      (let [{:keys [comms]} @state
+                            {:keys [comm_id data]} (:content request)]
+                        (prn request :comm (comms comm_id))
+                        (when-not (some-> (comms comm_id) second (a/>! [data ctx]))
+                          ; unknown comm or closed channel
+                          (a/>! ctx [:broadcast "comm_close" {:comm_id comm_id :data {}}])))
+
+                      "comm_close"
+                      (let [{:keys [comms]} @state
+                            {:keys [comm_id data]} (:content request)]
+                        (prn request)
+                        (some-> (comms comm_id) second a/close!)
+                        (swap! state update :comms dissoc comm_id))
+                      
+                      "comm_info_request"
+                      (let [{:keys [comms]} @state
+                            {:keys [target_name]} (:content request)]
+                        (prn request)
+                        (a/>! ctx [:reply {:comms (into {} (x/by-key
+                                                             (x/for [[target] %
+                                                                     :when (or (nil? target_name) (= target_name target))]
+                                                               {:target_name target})) comms)}]))
               
                       "is_complete_request"
                       (a/>! ctx [:reply {:status (if (-> request :content :code is-complete?) "complete" "incomplete")}])
@@ -442,7 +467,32 @@
              msgs-ch))
          shell-process (shell-handler shell-socket)
          control-process (shell-handler control-socket)]
-      
+     
+     (swap! state assoc-in [:comm-targets "expansion"]
+       (fn [comm-id _]
+         (let [msg-in (a/chan)]
+           (a/go-loop []
+             (when-some [[{:keys [elision-id]} ctx] (a/<! msg-in)]
+               (prn 'elision-id elision-id)
+               (when-some [aux (:aux @state)]
+                 (prn 'going-to-resolve)
+                 (let [form (read-string elision-id)
+                       [tag payload] (a/<! (aux-eval aux form))]
+                   (prn 'expansion tag payload)
+                   (case tag
+                     :eval (let [payload
+                                 (cond
+                                   (nil? payload) ()
+                                   (= payload (tagged-literal 'unrepl/... nil)) (list payload)
+                                   :else payload)]
+                             (a/>! ctx [:broadcast "comm_msg"
+                                        {:comm_id comm-id
+                                         :data {:elision-id elision-id
+                                                :expansion (li/html payload)}}]))
+                     :exception (throw (ex-info "Error while resolving elision." {:ex payload})))
+                   (recur)))))
+           msg-in)))
+     
      (heartbeat-loop alive (doto (zmq/socket context :rep) (zmq/bind hb-addr)))
       
      (a/go-loop [state {}]

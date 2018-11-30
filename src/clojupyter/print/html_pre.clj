@@ -5,6 +5,13 @@
     [clojupyter.unrepl.elisions :as elisions]
     [clojure.string :as str]))
 
+;; layout rules:
+;; * if a collection needs multiple lines then
+;;   there must be a line break (eventually preced by a comma)
+;;   after its trail
+;; * the trail is made of all closing delimiters and eventually a comma
+;; * so basically trails need to be pushed
+
 (defn markup [text markup-text]
   {:length (count text)
    :text markup-text
@@ -32,7 +39,7 @@
    :start-text text})
 
 (defn opening [s i]
-  (let [pre (str "<span class=coll><span class=punct>" (esc s) "</span>")]
+  (let [pre (str "<span class=coll><span class=punct>" (esc s) "</span><span class=items>")]
     {:start-length (count s)
      :start-text pre
      :length (count s)
@@ -41,7 +48,7 @@
 
 (defn closing [s] 
   {:length (count s)
-   :text (str "<span class=punct>" (esc s) "</span></span>")
+   :text (str "</span><span class=punct>" (esc s) "</span></span>")
    :br-after? true
    :indent -1})
 

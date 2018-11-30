@@ -5,8 +5,11 @@ pom.xml
 pom.xml.asc
 *.jar
 *.class
+*.ipynb
+/.ipynb_checkpoints
 /.lein-*
 /.nrepl-port
 bin/clojupyter
 .idea
 clojupyter.iml
+/eclipse-bin/
