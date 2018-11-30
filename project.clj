@@ -13,6 +13,7 @@
                  [org.zeromq/jeromq "0.3.4"] ; "0.3.5" (modern) fails on zmq/bind.
                  [net.cgrand/packed-printer "0.3.0"]
                  [net.cgrand/xforms "0.19.0"]
+                 [pandect "0.5.4"]
                  [org.clojure/tools.deps.alpha "0.5.417"]]
   :aot [iclj.core]
   :main iclj.core

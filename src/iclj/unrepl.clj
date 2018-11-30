@@ -1,5 +1,5 @@
 (ns iclj.unrepl
-  (:require [iclj.misc.messages :refer :all]
+  (:require [iclj.messages :refer :all]
             [clojure.core.async :as a]
             [clojure.walk :as w]
             [clojure.edn :as edn]

@@ -1,4 +1,4 @@
-(ns iclj.html
+(ns iclj.print.html
   "Dynamic HTML :-)"
   (:require [iclj.unrepl.elisions :as elisions]
     [clojure.string :as str]))
