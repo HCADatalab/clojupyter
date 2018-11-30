@@ -1,7 +1,7 @@
-(ns clojupyter.print.text
+(ns iclj.print.text
   (:require [net.cgrand.packed-printer.core :as core]
     [net.cgrand.packed-printer.text.edn :as te]
-    [clojupyter.unrepl.elisions :as elisions]))
+    [iclj.unrepl.elisions :as elisions]))
 
 (defn ansi [text ansi-text]
   {:length (count text)

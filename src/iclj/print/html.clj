@@ -1,6 +1,6 @@
-(ns clojupyter.print.html
+(ns iclj.html
   "Dynamic HTML :-)"
-  (:require [clojupyter.unrepl.elisions :as elisions]
+  (:require [iclj.unrepl.elisions :as elisions]
     [clojure.string :as str]))
 
 ;; layout rules:

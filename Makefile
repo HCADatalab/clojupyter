@@ -10,8 +10,8 @@ endif
 
 all:
 	lein uberjar
-	cat bin/clojupyter.template $$(find . -maxdepth 2 -type f | grep -e ".*standalone.*\.jar") > bin/clojupyter
-	chmod +x bin/clojupyter
+	cat bin/iclj.template $$(find . -maxdepth 2 -type f | grep -e ".*standalone.*\.jar") > bin/iclj
+	chmod +x bin/iclj
 
 clean:
 	rm -f *.jar
@@ -20,5 +20,5 @@ clean:
 
 install:
 	mkdir -p $(kernelDir)
-	cp bin/clojupyter $(kernelDir)/clojupyter
-	sed 's|KERNEL|'${kernelDir}/clojupyter'|' resources/kernel.json > $(kernelDir)/kernel.json;\
+	cp bin/iclj $(kernelDir)/iclj
+	sed 's|KERNEL|'${kernelDir}/iclj'|' resources/kernel.json > $(kernelDir)/kernel.json;\

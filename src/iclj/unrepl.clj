@@ -1,5 +1,5 @@
-(ns clojupyter.misc.unrepl-comm
-  (:require [clojupyter.misc.messages :refer :all]
+(ns iclj.unrepl
+  (:require [iclj.misc.messages :refer :all]
             [clojure.core.async :as a]
             [clojure.walk :as w]
             [clojure.edn :as edn]
@@ -7,10 +7,10 @@
             [clojure.java.io :as io]
             [taoensso.timbre :as log]
             [cheshire.core :as json]
-            [clojupyter.print.text]
-            [clojupyter.print.html-pre :as html]
+            [iclj.print.text]
+            [iclj.print.html-pre :as html]
             [net.cgrand.packed-printer :as pp]
-            [clojupyter.unrepl.elisions :as elisions]
+            [iclj.unrepl.elisions :as elisions]
             [clojure.tools.deps.alpha :as deps]))
 
 (defmacro ^:private while-some [binding & body]

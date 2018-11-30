@@ -1,12 +1,12 @@
-(ns clojupyter.core
+(ns iclj.core
   (:require [beckon]
     [cheshire.core :as json]
     [clojure.java.io :as io]
     [clojure.edn :as edn]
-    [clojupyter.misc.unrepl-comm :as unrepl-comm]
-    [clojupyter.unrepl.elisions :as elisions]
-    [clojupyter.misc.messages :as msg]
-    [clojupyter.print.html :as li]
+    [iclj.unrepl :as unrepl]
+    [iclj.unrepl.elisions :as elisions]
+    [iclj.messages :as msg]
+    [iclj.print.html :as li]
     [cheshire.core :as json]
     [clojure.stacktrace :as st]
     [clojure.walk :as walk]
@@ -40,17 +40,6 @@
                  (zipmap blob-names blobs)
                  {:buffers (drop (count blob-names) blobs)})]
     message))
-
-#_(defn process-event [alive sockets socket key handler]
-   (let [message        (parts-to-message (zmq/receive-all (sockets socket)))
-         parsed-message (msg/parse-message message)
-         parent-header  (:header parsed-message)
-         session-id     (:session parent-header)]
-     (send-message (:iopub-socket sockets) "status"
-       {:execution_state "busy"} parent-header session-id {} key)
-     (handler parsed-message)
-     (send-message (:iopub-socket sockets) "status"
-       {:execution_state "idle"} parent-header session-id {} key)))
 
 (defmacro ^:private while-some [binding & body]
   `(loop []
@@ -225,8 +214,8 @@
     form))
 
 (defn- self-connector []
-  (let [{in-writer :writer in-reader :reader} (unrepl-comm/pipe)
-        {out-writer :writer out-reader :reader} (unrepl-comm/pipe)]
+  (let [{in-writer :writer in-reader :reader} (unrepl/pipe)
+        {out-writer :writer out-reader :reader} (unrepl/pipe)]
     (a/thread
       (binding [*out* out-writer *in* (clojure.lang.LineNumberingPushbackReader. in-reader)]
         (clojure.main/repl)))
@@ -237,7 +226,7 @@
   (let [repl-in (a/chan)
         repl-out (a/chan)]
     (swap! state assoc :connector connector :repl nil :aux nil :class-loader nil)
-    (unrepl-comm/unrepl-process (unrepl-comm/unrepl-connect connector) repl-in repl-out)
+    (unrepl/unrepl-process (unrepl/unrepl-connect connector) repl-in repl-out)
     (swap! state assoc :repl {:in repl-in :out repl-out})
     (a/go
       (while-some [[tag payload id] (a/<! repl-out)]
@@ -250,7 +239,7 @@
             (swap! state assoc :actions actions)
             (when start-aux
               (prn 'STARTAUX)
-              (unrepl-comm/unrepl-process (unrepl-comm/aux-connect connector start-aux) aux-in aux-out)
+              (unrepl/unrepl-process (unrepl/aux-connect connector start-aux) aux-in aux-out)
               (swap! state assoc :aux {:in aux-in :out aux-out})
               (a/go
                 (prn 'STARTEDAUX)
@@ -261,7 +250,7 @@
               (let [class-loader (clojure.lang.DynamicClassLoader. (.getContextClassLoader (Thread/currentThread)))
                     {:keys [^java.io.Writer in ^java.io.Reader out]} (connector)]
                 (binding [*out* in] (prn start-side-loader)) ; send upgrade form
-                (unrepl-comm/sideloader-loop in out class-loader)
+                (unrepl/sideloader-loop in out class-loader)
                 (swap! state assoc :class-loader class-loader))))
           
           :prompt (handle-prompt state payload)
@@ -313,9 +302,6 @@
                  (a/>! zmq-out (zmq-msg msg)))
                (a/>! zmq-out (zmq-msg [:broadcast "status" {:execution_state "idle"}])))
              ctx))
-         ;; WIP : I'm in the middle of turning shell-handler into porcesses to allow
-         ;; concurrent handling of interrupt and eval
-         ;; thus serialization should only occur around repl connections
          shell-handler
          (fn [socket]
            (let [msgs-ch (a/chan)]
@@ -508,20 +494,7 @@
                (log/error "Message type" msg-type "not handled yet. Exiting.")
                (log/error "Message dump:" message)
                (System/exit -1)))))
-       (recur state))
-      
-     #_(try
-        (reset! (beckon/signal-atom "INT") #{(fn [] #_(pp/pprint (pnrepl/nrepl-interrupt nrepl-comm)))})
-        (control-loop   alive sockets nrepl-comm key)
-        ;; check every second if state
-        ;; has changed to anything other than alive
-        (while @alive (Thread/sleep status-sleep))
-        (catch Exception e
-          (exception-handler e))
-        (finally (doseq [socket [shell-socket iopub-socket control-socket hb-socket]]
-                   (zmq/set-linger socket 0)
-                   (zmq/close socket))
-                 (System/exit 0))))))
+       (recur state)))))
 
 (defn -main [& args]
   (log/set-level! :error)

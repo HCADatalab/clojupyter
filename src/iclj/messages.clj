@@ -1,4 +1,4 @@
-(ns clojupyter.misc.messages
+(ns iclj.messages
   (:require
    [cheshire.core :as cheshire]
    [clj-time.core :as time]

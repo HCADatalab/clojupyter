@@ -1,4 +1,4 @@
-(ns clojupyter.unrepl.elisions)
+(ns iclj.unrepl.elisions)
 
 (def ^:private shorthands (atom {:direct {} :reverse {}}))
 

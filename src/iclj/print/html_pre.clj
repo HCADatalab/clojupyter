@@ -1,8 +1,8 @@
-(ns clojupyter.print.html-pre
+(ns iclj.print.html-pre
   "Preformatted HTML"
   (:require [net.cgrand.packed-printer.core :as core]
     [net.cgrand.packed-printer :as pp]
-    [clojupyter.unrepl.elisions :as elisions]
+    [iclj.unrepl.elisions :as elisions]
     [clojure.string :as str]))
 
 ;; layout rules:

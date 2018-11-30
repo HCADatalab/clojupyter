@@ -8,8 +8,7 @@ pom.xml.asc
 *.ipynb
 /.ipynb_checkpoints
 /.lein-*
-/.nrepl-port
-bin/clojupyter
+bin/iclj
 .idea
-clojupyter.iml
 /eclipse-bin/
+/iclojure_extension/node_modules

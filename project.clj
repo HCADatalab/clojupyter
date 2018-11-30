@@ -1,6 +1,6 @@
-(defproject clojupyter "0.2.0-SNAPSHOT"
-  :description "An IPython kernel for executing Clojure code"
-  :url "http://github.com/roryk/clojupyter"
+(defproject hcadatalab/iclojure "0.3.0-SNAPSHOT"
+  :description "An IPython/JupyterLab kernel for Clojure."
+  :url "http://github.com/HCADatalab/IClojure"
   :license {:name "MIT"}
   :dependencies [[beckon "0.1.1"]
                  [cheshire "5.7.0"]
@@ -11,15 +11,11 @@
                  [org.clojure/data.codec "0.1.0"]
                  [org.zeromq/cljzmq "0.1.4" :exclusions [org.zeromq/jzmq]]
                  [org.zeromq/jeromq "0.3.4"] ; "0.3.5" (modern) fails on zmq/bind.
-                 [pandect "0.5.4"]
-                 [hiccup "1.0.5"]
                  [net.cgrand/packed-printer "0.3.0"]
-                 [net.cgrand/xforms "0.16.0"]
+                 [net.cgrand/xforms "0.19.0"]
                  [org.clojure/tools.deps.alpha "0.5.417"]]
-  :aot [clojupyter.core]
-  :main clojupyter.core
+  :aot [iclj.core]
+  :main iclj.core
  #_#_ :jvm-opts ["-Xmx250m"]
-  :keep-non-project-classes true
-  :profiles {:dev {:dependencies [[midje "1.9.0" :exclusions [org.clojure/clojure]]]
-                   :plugins [[lein-midje "3.2.1"]]}})
+  :keep-non-project-classes true)
 
